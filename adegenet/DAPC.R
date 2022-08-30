@@ -11,7 +11,7 @@ library(dplyr)
 
 #import the data
 ####################################################################################
-albo<-read.PLINK("albo.raw", quiet = FALSE, chunkSize = 1000, # map.file = "file1.map", (after plink file) 
+albo<-read.PLINK("./adegenet/albo.raw", quiet = FALSE, chunkSize = 1000, # map.file = "file1.map", (after plink file) 
                    parallel = require("parallel"), n.cores = 6)
 
 #for windows
