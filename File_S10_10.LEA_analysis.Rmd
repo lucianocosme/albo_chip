@@ -1,0 +1,2229 @@
+---
+title: "Aedes albopictus SNP chip - Ancestry analysis with LEA."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+##LEA
+
+Libraries
+```{r, message=FALSE, results='hide'}
+library(LEA)
+library(vcfR)
+library(RColorBrewer)
+library(ggplot2)
+library(adegenet)
+library(ape)
+library(tidyverse)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(colorout)
+library(extrafont)
+library(scales)
+library(stringr)
+library(ggtext)
+```
+
+### 1 Neutral SNP set
+
+Check the data
+```{bash}
+ls output/populations/snps_sets/*.vcf
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "populations", "snps_sets", "neutral.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+PCA
+```{r}
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+nPC <- length(inds)
+pc <- pca(gsub(".vcf", ".lfmm", genotype), K = nPC)
+show(pc)
+```
+
+Test
+```{r}
+# PC significant test: tracy-widom test
+tw <- tracy.widom(pc)
+# tw$pvalues
+# plot the percentage of variance explained by each component
+plot(tw$percentage, pch = 19, col = "pink", cex = .8)
+```
+
+Get values
+```{r}
+# plot preparation
+pc.coord <- as.data.frame(pc$projections)
+colnames(pc.coord) <- paste0("PC", 1:nPC)
+pc.coord$Individual <- inds
+pc.coord$Population <- pops
+# perc1 <- paste0(round(tw$percentage, digits = 3) * 100, "%")
+perc <- paste0(round(pc$eigenvalues/sum(pc$eigenvalues), digits = 3) * 100, "%")
+nb.cols <- 40
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+```
+
+Check R symbols for plot
+```{r}
+#to see all shapes -> plot shapes - para escolher os simbolos
+N = 100; M = 1000
+good.shapes = c(1:25,33:127)
+foo = data.frame( x = rnorm(M), y = rnorm(M), s = factor( sample(1:N, M, replace = TRUE) ) )
+# ggplot(aes(x,y,shape=s ), data=foo ) +
+#   scale_shape_manual(values=good.shapes[1:N]) +
+#   geom_point()
+```
+
+Sample data
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+More sample data
+```{r}
+# import sample attributes
+samples2 <- read.delim(
+  here(
+    "output", "populations", "Population_meta_data.txt"
+  ),
+  head = TRUE
+)
+
+samples2<- samples2 |>
+  dplyr::select(
+    region, pop
+  )
+
+# check head of the file
+head(samples2)
+```
+
+Merge with sampling_loc
+```{r}
+merged_loc <- merge(samples2, sampling_loc, by.x = "pop", by.y = "Abbreviation")
+head(merged_loc)
+```
+
+Check pops
+```{r}
+head(pc.coord$Population)
+```
+
+Check how many sampling localities
+```{r}
+length(unique(pc.coord$Population))
+```
+
+Merge
+```{r}
+merged_data <- merge(pc.coord, merged_loc, by.x = "Population", by.y = "pop")
+head(merged_data)
+```
+
+Create PCA plot
+```{r}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",
+  "#7FFFD4",
+  "#D2691E",
+  "#DC143C",
+  "#8B008B"
+)
+
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC2 (", perc[2], " Variance)")) +
+  labs(
+    caption = "PCA with 9,047 intergenic SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  ) +
+  xlim(-100, 100) +
+  ylim(-100, 100)
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc2_neutral.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+PC1 and PC3
+```{r}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",
+  "#7FFFD4",
+  "#D2691E",
+  "#DC143C",
+  "#8B008B" 
+)
+
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC3 (", perc[3], " Variance)")) +
+  labs(
+    caption = "PCA with 9,047 intergenic SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  )
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc3_neutral.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:15,
+  project = "new",
+  repetitions = 5,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/populations/snps_sets/neutral.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","populations","figures","lea_cross_entropy_neutral.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+#### 1.1 k7
+
+Default plot
+```{r}
+# select the best run for K = 4 clusters
+best = which.min(cross.entropy(project, K = 7))
+# best is run 3
+barchart(project, K = 7, run = best,
+        border = NA, space = 0,
+        col = distinct_palette,
+        xlab = "Individuals",
+        ylab = "Ancestry proportions",
+        main = "Ancestry matrix") -> bp
+axis(1, at = 1:length(bp$order),
+     labels = bp$order, las=1,
+     cex.axis = .4)
+```
+
+
+Mean admixture by country using ggplot
+```{r, eval=FALSE, fig.width=9, fig.height=6}
+distinct_palette <-
+  c(
+    "#AE9393",
+    "#FFB347",
+    "#FFFF99",
+    "#D0F0C0",
+    "#AEC6CF",
+    "#008080",
+    "#F49AC2",
+    "#1E90FF",
+    "#75FAFF",
+    "#77DD77",
+    "#B22222",
+    "#B8B800",
+    "#B20CD9",
+    "#FFD1DC",
+    "#779ECB",
+    "#FF8C1A"
+  )
+
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+
+
+# Extract ancestry coefficients
+Q_values <- as.data.frame(Q(project, K = 7, run = best))
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia",
+  "Madagascar" = "Africa",
+  "Nigeria" = "Africa",
+  "Albania" = "Europe",
+  "Russia" = "Europe",
+  "Spain" = "Europe",
+  "USA" = "North America",
+  "Argentina" = "South America",
+  "Trinidad and Tobago" = "North America"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+
+# Add individual IDs and pops ids
+Q_values$ind <- inds
+Q_values$pop <- pops
+
+# Melt the data frame for plotting
+Q_melted <- melt(Q_values, id.vars = c("ind", "pop"))
+
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country) |>
+  mutate(Region_Country = factor(Region_Country, levels = unique(Region_Country)))
+
+# Group by Country and calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(Region_Country, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <- data.frame(Region_Country = unique(Q_grouped$Region_Country))
+
+# Add the order of each country to ensure correct placement of borders
+borders$order <- 1:nrow(borders) + 0.5  # Shift borders to the right edge of the bars
+
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(Region_Country) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Generate all potential variable names
+all_variables <- paste0("V", 1:16)
+
+# Create a data frame that pairs each potential variable with a color
+color_mapping <- data.frame(variable = all_variables,
+                            color = distinct_palette[1:length(all_variables)])
+
+# Merge this data frame with Q_grouped_filtered to create the new color column
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create bar chart
+ggplot(Q_grouped_filtered, aes(x = Region_Country, y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_segment(data = borders, aes(x = order, xend = order, y = 0, yend = 1, fill = NULL), linetype = "solid", color = "#2C444A") +  # Add borders
+  my_theme() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.position = "none") +  # Hide legend
+  xlab("") +  # Suppress x-axis label
+  ylab("Ancestry proportions") +
+  ggtitle("Ancestry matrix") +
+  labs(caption = "Each bar represents the average ancestry proportions for individuals in a given country for k=7.") +
+  # scale_fill_manual(values = color) +
+  scale_x_discrete(labels = function(x) gsub(".*_", "", x))  # Remove Region prefix from labels
+
+
+#   ____________________________________________________________________________
+#   save the pca plot                                                       ####
+# ggsave(
+#   here(
+#     "output", "populations", "figures", "LEA_k=7_neutral.pdf"
+#   ),
+#   width  = 12,
+#   height = 6,
+#   units  = "in",
+#   device = cairo_pdf
+# )
+```
+
+Using ggplot2 for individual admixtures
+
+```{r}
+# Extract ancestry coefficients
+leak7 <- read_delim(
+  here("output", "populations", "snps_sets", "neutral.snmf", "K7", "run3","neutral_r3.7.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak7)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak7 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak7)
+
+head(leak7)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak7 <- leak7 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak7)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak7 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#D0F0C0",
+    "v5" = "#00FF00",
+    "v6" = "#FFFF00",
+    "v7" = "#AEC6CF"
+  )
+
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:7)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=7.\n LEA inference for k7 with intergenic SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "populations", "figures", "lea_k=7_neutral.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+#### 1.2 k5
+
+We can plot k=5 to compare to other algorithms.
+
+Find the best run
+```{r}
+best = which.min(cross.entropy(project, K = 5))
+best
+```
+
+Run 3 for k=5
+
+```{r}
+# Extract ancestry coefficients
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "neutral.snmf", "K5", "run3","neutral_r3.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#FFFF00",
+    "v3" = "#FF00FF",
+    "v4" = "#0000FF",
+    "v5" = "#00FF00"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:15 with intergenic SNPs") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "populations", "figures", "lea_k=5_neutral.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 2 SNP set with prunning using r2 0.01
+
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "populations", "snps_sets", "r2_0.01.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+Samples ids
+```{r}
+#create vectors of individual names and population attribution
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert
+```{r}
+#  convert the vcf file, which should be located in the working directory, into a geno file in the working directory
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+PCA
+```{r}
+### PCA #####
+# set output dir
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+nPC <- length(inds)
+pc <- pca(gsub(".vcf", ".lfmm", genotype), K = nPC)
+show(pc)
+```
+Test
+```{r}
+# PC significant test: tracy-widom test
+tw <- tracy.widom(pc)
+# tw$pvalues
+# plot the percentage of variance explained by each component
+plot(tw$percentage, pch = 19, col = "pink", cex = .8)
+```
+
+Values
+```{r}
+# plot preparation
+pc.coord <- as.data.frame(pc$projections)
+colnames(pc.coord) <- paste0("PC", 1:nPC)
+pc.coord$Individual <- inds
+pc.coord$Population <- pops
+# perc1 <- paste0(round(tw$percentage, digits = 3) * 100, "%")
+perc <- paste0(round(pc$eigenvalues/sum(pc$eigenvalues), digits = 3) * 100, "%")
+nb.cols <- 40
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+```
+
+Shapes
+```{r}
+#to see all shapes -> plot shapes - para escolher os simbolos
+N = 100; M = 1000
+good.shapes = c(1:25,33:127)
+foo = data.frame( x = rnorm(M), y = rnorm(M), s = factor( sample(1:N, M, replace = TRUE) ) )
+# ggplot(aes(x,y,shape=s ), data=foo ) +
+#   scale_shape_manual(values=good.shapes[1:N]) +
+#   geom_point()
+```
+
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r}
+# import sample attributes
+samples2 <- read.delim(
+  here(
+    "output", "populations", "Population_meta_data.txt"
+  ),
+  head = TRUE
+)
+
+samples2<- samples2 |>
+  dplyr::select(
+    region, pop
+  )
+
+# check head of the file
+head(samples2)
+```
+Merge with sampling_loc
+```{r}
+merged_loc <- merge(samples2, sampling_loc, by.x = "pop", by.y = "Abbreviation")
+head(merged_loc)
+```
+
+
+```{r}
+head(pc.coord$Population)
+```
+
+Check how many sampling localities
+```{r}
+length(unique(pc.coord$Population))
+```
+
+
+Merge
+```{r}
+merged_data <- merge(pc.coord, merged_loc, by.x = "Population", by.y = "pop")
+head(merged_data)
+```
+
+Plot
+```{r, fig.height=6, fig.width=8}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",
+  "#7FFFD4",
+  "#D2691E",
+  "#DC143C",
+  "#8B008B"
+)
+merged_data$PC1 <- as.numeric(as.character(merged_data$PC1))
+merged_data$PC2 <- as.numeric(as.character(merged_data$PC2))
+merged_data$PC3 <- as.numeric(as.character(merged_data$PC3))
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC2 (", perc[2], " Variance)")) +
+  labs(
+    caption = "PCA with 20,931 SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  ) +
+  xlim(-100, 100) +
+  ylim(-100, 100)
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc2_r2_0.01.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+PC1 an PC3
+```{r}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",
+  "#7FFFD4",
+  "#D2691E",
+  "#DC143C",
+  "#8B008B" 
+)
+
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC3 (", perc[3], " Variance)")) +
+  labs(
+    caption = "PCA with 20,931 SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  )
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc3_r2_0.01.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:15,
+  project = "new",
+  repetitions = 5,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+Load project
+```{r}
+# To load the project, use:
+project = load.snmfProject("output/populations/snps_sets/r2_0.01.snmfProject")
+
+# To remove the project, use:
+ # remove.snmfProject("snps_sets/r2_0.01.snmfProject")
+```
+
+
+Cross entropy
+
+```{r, eval=FALSE}
+# Open a new pdf file
+pdf(here("output","populations","figures","lea_cross_entropy_r2_0.01.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+We will not plot k=8 but only the k=5 to compare to admixture
+
+
+#### 2.1 k5
+
+We can plot k=5 to compare to other algorithms
+
+Find the best run
+```{r}
+best8 = which.min(cross.entropy(project, K = 8)) # 5
+best5 = which.min(cross.entropy(project, K = 5)) # 2
+best8
+best5
+```
+
+Run 3 for k=5
+
+```{r}
+# Extract ancestry coefficients
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "r2_0.01.snmf", "K5", "run2","r2_0.01_r2.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF00FF",
+    "v3" = "#00FF00",
+    "v4" = "#0000FF",
+    "v5" = "#FF0000"
+  )
+
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:15 with SNPs pruned with r2 0.01.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "populations", "figures", "lea_k=5_r2_0.01.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+### 3 SNP set with prunning using r2 0.1
+
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "populations", "snps_sets", "r2_0.1.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+```{r}
+#create vectors of individual names and population attribution
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+```{r}
+#convert the vcf file, which should be located in the working directory, into a geno file in the working directory
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+PCA
+```{r}
+### PCA #####
+# set output dir
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+nPC <- length(inds)
+pc <- pca(gsub(".vcf", ".lfmm", genotype), K = nPC)
+show(pc)
+```
+
+Test
+```{r}
+# PC significant test: tracy-widom test
+tw <- tracy.widom(pc)
+# tw$pvalues
+# plot the percentage of variance explained by each component
+plot(tw$percentage, pch = 19, col = "pink", cex = .8)
+```
+
+Values
+```{r}
+# plot preparation
+pc.coord <- as.data.frame(pc$projections)
+colnames(pc.coord) <- paste0("PC", 1:nPC)
+pc.coord$Individual <- inds
+pc.coord$Population <- pops
+# perc1 <- paste0(round(tw$percentage, digits = 3) * 100, "%")
+perc <- paste0(round(pc$eigenvalues/sum(pc$eigenvalues), digits = 3) * 100, "%")
+nb.cols <- 40
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+```
+
+Symbols
+```{r}
+#to see all shapes -> plot shapes - para escolher os simbolos
+N = 100; M = 1000
+good.shapes = c(1:25,33:127)
+foo = data.frame( x = rnorm(M), y = rnorm(M), s = factor( sample(1:N, M, replace = TRUE) ) )
+# ggplot(aes(x,y,shape=s ), data=foo ) +
+#   scale_shape_manual(values=good.shapes[1:N]) +
+#   geom_point()
+```
+
+Meta data
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+More meta data
+```{r}
+# import sample attributes
+samples2 <- read.delim(
+  here(
+    "output", "populations", "Population_meta_data.txt"
+  ),
+  head = TRUE
+)
+
+samples2<- samples2 |>
+  dplyr::select(
+    region, pop
+  )
+
+# check head of the file
+head(samples2)
+```
+
+Merge with sampling_loc
+```{r}
+merged_loc <- merge(samples2, sampling_loc, by.x = "pop", by.y = "Abbreviation")
+head(merged_loc)
+```
+
+Check pops
+```{r}
+head(pc.coord$Population)
+```
+
+Check how many sampling localities
+```{r}
+length(unique(pc.coord$Population))
+```
+
+
+Merge
+```{r}
+merged_data <- merge(pc.coord, merged_loc, by.x = "Population", by.y = "pop")
+head(merged_data)
+```
+
+```{r, fig.height=6, fig.width=8}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",  # BurlyWood
+  "#7FFFD4",  # Aquamarine
+  "#D2691E",  # Chocolate
+  "#DC143C",  # Crimson
+  "#8B008B"   # DarkMagenta
+)
+merged_data$PC1 <- as.numeric(as.character(merged_data$PC1))
+merged_data$PC2 <- as.numeric(as.character(merged_data$PC2))
+merged_data$PC3 <- as.numeric(as.character(merged_data$PC3))
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC2 (", perc[2], " Variance)")) +
+  labs(
+    caption = "PCA with 57,780 SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  ) +
+  xlim(-100, 100) +
+  ylim(-100, 100)
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc2_r2_0.1.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+PC1 an PC3
+```{r}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+distinct_palette <- c(
+  "#E69F00",
+  "#009E73",
+  "#0072B2",
+  "#CC79A7",
+  "#800000",
+  "#808080",
+  "#CCEBC5",
+  "#FFB5B8",
+  "#99CCFF",
+  "#8E8BFF",
+  "#F781BF",
+  "#FFFF33",
+  "#A65628",
+  "#984EA3",
+  "#D2D2D2",
+  "#4DAF4A",
+  "#DEB887",  # BurlyWood
+  "#7FFFD4",  # Aquamarine
+  "#D2691E",  # Chocolate
+  "#DC143C",  # Crimson
+  "#8B008B"   # DarkMagenta
+)
+
+
+# make plot by continent and range
+ggplot(merged_data, aes(PC1, PC2)) +
+  geom_point(aes(colour = Country, shape = Country), size = 1) +
+  xlab(paste0("PC1 (", perc[1], " Variance)")) +
+  ylab(paste0("PC3 (", perc[3], " Variance)")) +
+  labs(
+    caption = "PCA with 57,780 SNPs of 237 mosquitoes from 28 localities in Asia."
+  ) +
+  guides(
+    color = guide_legend(title = "Country", ncol = 3),
+    shape = guide_legend(title = "Country", ncol = 3),
+    fill = guide_legend(title = "Region", ncol = 1)
+  ) +
+  stat_ellipse(aes(fill = region, group = region), geom = "polygon", alpha = 0.2, level = 0.8) +
+  scale_color_manual(values = distinct_palette) +
+  scale_shape_manual(values=good.shapes[c(1:25, 58:67)]) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "top",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 25, 5.5, 5.5, "points"),
+    legend.margin = margin(10,10,10,10)
+  )
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "populations", "figures", "PCA_lea_pc1_pc3_r2_0.1.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "populations"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 6 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:15,
+  project = "new",
+  repetitions = 5,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+
+Load project
+```{r}
+# To load the project, use:
+project = load.snmfProject("output/populations/snps_sets/r2_0.1.snmfProject")
+
+# To remove the project, use:
+ # remove.snmfProject("snps_sets/r2_0.1.snmfProject")
+```
+
+
+Cross entropy
+
+```{r, eval=FALSE}
+# Open a new pdf file
+pdf(here("output","populations","figures","lea_cross_entropy_r2_0.1.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+We will not plot k=8 but only the k=5 to compare to admixture
+
+
+#### 3.1 k5
+We can plot k=5 to compare to other algorithms
+
+Find the best run
+```{r}
+best8 = which.min(cross.entropy(project, K = 8)) # 5
+best5 = which.min(cross.entropy(project, K = 5)) # 5
+best8
+best5
+```
+
+Run 3 for k=5
+
+```{r}
+# Extract ancestry coefficients
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "r2_0.1.snmf", "K5", "run5","r2_0.1_r5.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#0000FF",
+    "v2" = "#FFFF00",
+    "v3" = "#FF0000",
+    "v4" = "#FF00FF",
+    "v5" = "#00FF00"
+  )
+
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:15 with SNPs prunned with r2 0.1.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "populations", "figures", "lea_k=5_r2_0.1.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+

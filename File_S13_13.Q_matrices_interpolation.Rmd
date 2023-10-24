@@ -1,0 +1,5333 @@
+---
+title: "Aedes albopictus SNP chip - Interpolation of Q matrices over Asia."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+# Overview
+
+To work through this, clone the repository (an RStudio project) at
+[https://github.com/eriqande/make-a-BGP-map](https://github.com/eriqande/make-a-BGP-map) to
+get all the necessary input files, etc.  Then open up the RStudio project and run
+through 'Make-a-BGP-map-Notebook.Rmd'.
+
+
+# Packages
+
+### Non-standard Packages
+
+
+1. **fork** of `tess3r`.  Note that you can't use the default version of `tess3r`,
+you have to use my fork of it, which has some extra functionality.
+2. the package `genoscapeRtools`
+
+Get those packages like this:
+```{r, eval=FALSE}
+remotes::install_github("eriqande/TESS3_encho_sen")  # for special version of tess3r
+remotes::install_github("eriqande/genoscapeRtools")  # for Eric's genoscapeRtools
+```
+
+# Standard Packages
+
+The rest of the packages you need can be downloaded from CRAN.  If you don't have
+them you should get them: `raster`, `sf`, `fields`, `downloader`, and `tidyverse`. The last one there gets ggplot2
+and a number of other packages by Hadley Wickham.
+
+You can get those like this:
+```{r, eval=FALSE}
+install.packages(c("raster", "sf", "tidyverse", "fields", "downloader"))
+```
+
+## 1. Load the Packages
+
+```{r, comment=FALSE, warning=FALSE, message=FALSE}
+library(raster)
+library(tidyverse)
+library(sf)
+library(ggspatial)
+library(ggplot2)
+library(dplyr)
+library(colorout)
+library(here)
+library(scatterpie)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+library(ggforce)
+library(grid) 
+library(tess3r)
+library(maps)
+```
+
+
+## 2. LEA neutral k=7
+
+Some rund of the algorithms indicated a higher number of ancestral populations
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 2.1 Q-values
+
+```{r}
+# Extract ancestry coefficients
+leak7 <- read_delim(
+  here("output", "populations", "snps_sets", "neutral.snmf", "K7", "run3","neutral_r3.7.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak7)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+
+Add it to matrix
+```{r}
+leak7 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak7)
+
+head(leak7)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak7 <- leak7 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak7)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak7$index <- seq_len(nrow(leak7))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak7,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#D0F0C0",
+    "v5" = "#00FF00",
+    "v6" = "#FFFF00",
+    "v7" = "#AEC6CF"
+  )
+```
+
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5", "v6", "v7"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_neutral_k7_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 2.2 Preparing the data for tess3Q_map_rasters
+
+Within Eric's fork of tess3r is a function called tess3Q_map_rasters.  It
+takes input from the objects we have above, but it takes that input as 
+matrices rather than data frames, etc. so there is a little finagling to be done.
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 2.3 Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak7 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 2.4 Interpolate the Q-values by Kriging
+
+For this, we use the above variables in tess3r::tess3Q_map_rasters().  Note the
+use of namespace addressing for this function rather than loading the whole tess3r package
+with the library() command.
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak7 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+That gives us a raster brick of Q-values associated with each cell in the raster, but
+those values are not always constrained between 0 and 1, so we have to massage them 
+a little bit in the next section.
+
+### 2.5 Scaling and cleaning the genoscape_brick
+
+For this we use the function 'genoscapeRtools::qprob_rando_raster()'. This takes the raster
+brick that comes out of tess3Q_map_rasters() and does some rescaling and (maybe) some random sampling
+to return a raster of colors that I hope will do a reliable job of representing (in some way) predicted
+assignment accuracy over space.
+See '?genoscapeRtools::qprob_rando_raster' to learn about the scaling options, etc. (However, I am
+not convinced that all of those options are reliably estimated.)
+
+This will squash the raster brick down to a single
+RGBA (i.e., four channels, red, green, blue and alpha) raster brick.
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5", "v6", "v7"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_neutral_k7_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 3. LEA neutral k=5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 3.1 Q-values
+
+
+```{r}
+# Extract ancestry coefficients
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "neutral.snmf", "K5", "run3","neutral_r3.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#FFFF00",
+    "v3" = "#FF00FF",
+    "v4" = "#0000FF",
+    "v5" = "#00FF00"
+  )
+
+
+```
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_neutral_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 3.2 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 3.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 3.4 Interpolate the Q-values by Kriging
+
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 3.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_neutral_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 4. LEA r2 0.01 k=5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 4.1 Q-values
+
+```{r}
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "r2_0.01.snmf", "K5", "run2","r2_0.01_r2.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF00FF",
+    "v3" = "#00FF00",
+    "v4" = "#0000FF",
+    "v5" = "#FF0000"
+  )
+```
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_r2_0.01_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 4.2 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 4.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 4.4 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+
+### 4.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_r2_0.01_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+## 5. LEA r2 0.1 k=5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 5.1 Q-values
+
+```{r}
+# Extract ancestry coefficients
+leak5 <- read_delim(
+  here("output", "populations", "snps_sets", "r2_0.1.snmf", "K5", "run5","r2_0.1_r5.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#0000FF",
+    "v2" = "#FFFF00",
+    "v3" = "#FF0000",
+    "v4" = "#FF00FF",
+    "v5" = "#00FF00"
+  )
+```
+
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_r2_0.1_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 5.2 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 5.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 5.4 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 5.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "lea_r2_0.1_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 6. fastStructure neutral SNPs simple prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "neutral", "run01", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FF0000",
+    "v3" = "#FF00FF",
+    "v4" = "#FFFF00",
+    "v5" = "#0000FF"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_neutral_simple_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 6.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 6.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 6.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 6.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_neutral_simple_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+## 7. fastStructure neutral SNPs logistic prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "neutral", "run02", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FFFF00",
+    "v5" = "#00FF00"#,
+    # "v6" = "#008080",
+    # "v7" = "#FF00FF"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_neutral_logistic_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 7.1 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+
+### 7.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 7.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 7.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_neutral_logistic_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 8. fastStructure r2 0.01 SNPs simple prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.01", "run1", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#00FF00",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#0000FF"#,
+    # "v6" = "#008080",
+    # "v7" = "#FF00FF"
+  )
+```
+
+Plot
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.01_simple_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 8.1 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 8.2 make a matrix of the Q values
+
+
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 8.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 8.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.01_simple_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 9. fastStructure r2 0.01 SNPs logistic prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.01", "run1", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#0000FF",
+    "v3" = "#FFFF00",
+    "v4" = "#FF00FF",
+    "v5" = "#FF0000"#,
+    # "v6" = "#008080",
+    # "v7" = "#FF00FF"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.01_logistic_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 9.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 9.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 9.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 9.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.01_logistic_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 10. fastStructure r2 0.1 SNPs simple prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.1", "run1", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+```
+
+Plot
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.1_simple_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 10.1 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 10.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 10.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 10.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot
+
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+
+Plot
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.1_simple_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 11. fastStructure r2 0.1 SNPs logistic prior
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.1", "run1", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#00FF00",
+    "v4" = "#FF0000",
+    "v5" = "#FF00FF"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.1_logistic_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 11.1 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 11.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 11.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 11.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot
+```{r}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "fastStructure_r2_0.1_logistic_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 12. Admixture neutral SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "admixture", "neutral", "run1", "neutral.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FFFF00",
+    "v3" = "#0000FF",
+    "v4" = "#FF00FF",
+    "v5" = "#FF0000"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "admixture_neutral_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 12.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 12.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 12.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 12.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "admixture_neutral_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 13. Admixture r2 0.01 SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "admixture", "r2_0.01", "run1", "r2_0.01.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FFFF00",
+    "v3" = "#0000FF",
+    "v4" = "#FF00FF",
+    "v5" = "#FF0000"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "admixture_r2_0.01_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 13.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 13.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 13.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 13.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "admixture_r2_0.01_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 14. Admixture r2 0.1 SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "admixture", "r2_0.1", "run1", "r2_0.1.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FFFF00",
+    "v3" = "#0000FF",
+    "v4" = "#FF00FF",
+    "v5" = "#FF0000"
+  )
+```
+
+
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+# ggsave(
+#   here("output", "populations", "figures", "admixture_r2_0.1_k5_pie.pdf"),
+#   width  = 12,
+#   height = 6,
+#   units  = "in",
+#   device = cairo_pdf
+# )
+```
+
+
+### 14.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 14.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 14.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(40),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+### 14.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot
+```{r, eval=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1),
+    cols = c("v1", "v2", "v3", "v4", "v5"),
+    color = NA
+  ) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "admixture_r2_0.1_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+### 14.5 Figure for manuscript
+
+Colors
+```{r}
+# For manuscript
+color_palette2 <- 
+  c(
+    "v1" = "#00FF00",  # red
+    "v2" = "#FFFF00",  # blue
+    "v3" = "#0000FF",  # green
+    "v4" = "#FF00FF",  # yellow
+    "v5" = "#FF0000"   # magenta
+  )
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix,
+  coord = long_lat_matrix,
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  resolution = c(400,400),
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  # method = "map.max",
+  interpol = tess3r::FieldsKrigModel(10),
+  main = "Ancestry coefficients",
+  xlab = "Longitude",
+  ylab = "Latitude",
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scale
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+```{r, fig.width=9, fig.height=8}
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v5)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 1.5
+nudge_y <- -.5
+
+ggplot() +
+  geom_sf(
+  data = world,
+  fill = NA,
+  color = "gray",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude + nudge_x,
+      y0 = Latitude + nudge_y,
+      r0 = 0,
+      r = 1,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(
+      x0 = Longitude + nudge_x, 
+      y0 = Latitude + nudge_y, 
+      r = 1),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.05
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 4,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 3,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60))
+
+
+ggsave(
+  here("output", "populations", "figures", "admixture_r2_0.1_MANUSCRIPT.pdf"),
+  width  = 12,
+  height = 12,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+Create scale bars
+```{r}
+# Your palette
+color_palette2 <- 
+  c(
+    "v1" = "#00FF00",  # green
+    "v2" = "#FFFF00",  # yellow
+    "v3" = "#0000FF",  # blue
+    "v4" = "#FF00FF",  # magenta
+    "v5" = "#FF0000"   # red
+  )
+
+# Create a dataframe with a row for every step in the range for every variable
+df <- expand.grid(variable = names(color_palette2), 
+                  value = seq(0, 1, by = 0.1)) # 10 segments
+
+# Function to compute gradient color
+compute_gradient <- function(value, color) {
+  scales::gradient_n_pal(c("white", color))(value) # Use off-white as start color
+}
+
+# Compute gradient colors for each row in the dataframe
+df$color <- mapply(compute_gradient, df$value, color_palette2[df$variable])
+
+# Plot
+ggplot(df, aes(x = 1, y = value, fill = color)) + 
+  geom_tile(width = 0.5, height = 0.1) + 
+  scale_fill_identity() +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2)) + 
+  facet_wrap(~variable, scales = "free_y", ncol = 5) +
+  theme_classic() + 
+  labs(title = "Ancestry coefficients") + 
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        plot.title.position = "plot",        # Centers the title over the entire plot
+        plot.title = element_text(hjust = 0.5)  # Ensures the title text itself is centered
+       )
+
+ggsave(
+  here("output", "populations", "figures", "scale_bars.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+Usa tess3r plotting function
+```{r, fig.width=6, fig.height=6}
+
+# Convert matrices to data frames
+plot_data_df <- as.data.frame(df1[, c("v1", "v2", "v3", "v4", "v5")])
+
+# Convert data.frame to matrix
+plot_data_matrix <- as.matrix(plot_data_df)
+
+# Set the class of the object to be tess3Q, in addition to matrix and array
+class(plot_data_matrix) <- c("tess3Q", "matrix", "array")
+
+
+# Extract the coordinates in numeric matrix format
+coord_matrix <- as.matrix(df1[, c("Longitude", "Latitude")])
+
+
+# Use the plot function with tess3Q object and coordinate matrix
+plot(x = plot_data_matrix, coord = coord_matrix, method = "map.max",
+     resolution = c(400, 400),
+     interpolation.model = FieldsKrigModel(10),
+     cex = 0.4,
+     xlab = "Longitude",
+     ylab = "Latitude",
+     main = "Ancestry coefficients",
+     col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)))
+```
+
+Using ggplot
+```{r, fig.width=6, fig.height=6}
+main_plot <- ggtess3Q(
+  plot_data_matrix,
+  coord_matrix,
+  resolution = c(400, 400),
+  window = extent(selected_countries)[1:4],
+  background = TRUE,
+  map.polygon = selected_countries,
+  raster.filename = NULL,
+  interpolation.model = FieldsKrigModel(10),
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2))
+  ) + 
+  my_theme() + 
+  geom_sf(
+  data = world,
+  fill = NA,
+  color = "gray",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  labs(x = "Longitude",
+       y = "Latitude") + 
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.15, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = .5,
+    nudge_y = 0,
+    segment.alpha = 0
+  )
+
+
+main_plot
+
+ggsave(
+  here("output", "populations", "figures", "test1.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+Add bards
+```{r}
+#  To add bars
+# library(grid)
+# library(ggplot2)
+# 
+# Create a data frame for the color bars
+color_df <- data.frame(
+  x = rep(1:5, each = 101),
+  y = rep(seq(0, 1, length.out = 101), times = 5),
+  color = c(
+    colorRampPalette(c("white", "#00FF00"))(101),
+    colorRampPalette(c("white", "#FFFF00"))(101),
+    colorRampPalette(c("white", "#0000FF"))(101),
+    colorRampPalette(c("white", "#FF00FF"))(101),
+    colorRampPalette(c("white", "#FF0000"))(101)
+  )
+)
+
+# Create the color bar plot with scale bar
+color_bar_plot <- ggplot(color_df, aes(x = x, y = y, fill = color)) +
+  geom_tile(width = .5, height = 0.05) +
+  scale_fill_identity() +
+  geom_segment(data = data.frame(), aes(x = 0.55, xend = 5.5,
+                y = seq(0, 1, by = 0.25), yend = seq(0, 1, by = 0.25)),
+                inherit.aes = FALSE, size = 0.2, color = "darkgray", linetype = "dotted") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), limits = c(0, 1)) +
+  theme_void() +
+  labs(title = " Ancestry\ncoeficients") +
+  theme(axis.text.y = element_text(size = 10, color = "gray"),
+         plot.title = element_text(color = "darkgray"))
+
+# Convert the color bar plot to a grob
+color_bar_grob <- ggplotGrob(color_bar_plot)
+
+# Create a viewport to place the color bar plot
+vp <- viewport(x = 0.9, y = 0.4, width = 0.2, height = 0.2)
+
+# Create your main plot (e.g., ggtess3Q) and convert it to a grob
+main_grob <- ggplotGrob(main_plot)
+
+# Draw the main plot (Uncomment the next two lines when you have your main plot)
+grid.newpage()
+grid.draw(main_grob)
+
+# Draw the color bar plot inside the defined viewport
+pushViewport(vp)
+grid.draw(color_bar_grob)
+upViewport()
+
+
+
+# Save the main plot and color bar plot together in a PDF file
+pdf(here("output", "populations", "figures", "test2.pdf"), width = 6, height = 6)  # Adjust width and height as needed
+grid.newpage()
+grid.draw(main_grob)
+pushViewport(vp)
+grid.draw(color_bar_grob)
+upViewport()
+dev.off()  # Close the PDF device
+
+```
+
+
+## 15. neuro-admxiture r2 0.01 SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 15.1 Q-values
+
+Import Q
+```{r}
+# Extract ancestry coefficients
+nadmixk5 <- read_delim(
+  here("output", "populations", "nadmix", "results", "r_0.01","r_0.01_inference.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(nadmixk5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+nadmixk5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(nadmixk5)
+
+head(nadmixk5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+nadmixk5 <- nadmixk5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(nadmixk5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+nadmixk5$index <- seq_len(nrow(nadmixk5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    nadmixk5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FFFF00",
+    "v3" = "#FF0000",
+    "v4" = "#0000FF",
+    "v5" = "#FF00FF" 
+  )
+```
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_r_0.01_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 15.2 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 15.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- nadmixk5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 15.4 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- nadmixk5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 15.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_r_0.01_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 16. neuro-admxiture r2 0.1 SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 16.1 Q-values
+
+Import Q
+```{r}
+# Extract ancestry coefficients
+nadmixk5 <- read_delim(
+  here("output", "populations", "nadmix", "results", "r_0.1","r_0.1_inference.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(nadmixk5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+nadmixk5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(nadmixk5)
+
+head(nadmixk5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+nadmixk5 <- nadmixk5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(nadmixk5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+nadmixk5$index <- seq_len(nrow(nadmixk5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    nadmixk5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#0000FF",
+    "v3" = "#FFFF00", 
+    "v4" = "#FF0000",
+    "v5" = "#FF00FF"  
+  )
+```
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_r_0.1_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 16.2 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 16.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- nadmixk5 |>
+  dplyr::select(-ind, -pop, -index, -v5) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 16.4 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- nadmixk5 |>
+  dplyr::select(
+    -pop, -ind, -index, -v5
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 16.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+color_palette <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#0000FF",
+    "v3" = "#FFFF00", 
+    "v4" = "#FF0000"#,
+    # "v5" = "#FF00FF"  
+  )
+
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_r_0.1_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 17. neuro-admxiture neutral r2 0.1 SNPs k5
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+### 17.1 Q-values
+
+Import Q
+```{r}
+# Extract ancestry coefficients
+nadmixk5 <- read_delim(
+  here("output", "populations", "nadmix", "results", "neutral","neutral_inference.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(nadmixk5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+nadmixk5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(nadmixk5)
+
+head(nadmixk5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+nadmixk5 <- nadmixk5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(nadmixk5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+nadmixk5$index <- seq_len(nrow(nadmixk5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    nadmixk5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FF00FF",
+    "v3" = "#FFFF00", 
+    "v4" = "#0000FF",
+    "v5" = "#FF0000"  
+  )
+```
+
+Make pie plot
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1.5), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  geom_text_repel(data = df_mean,
+                  aes(x = Longitude, y = Latitude, label = pop), 
+                  size = 3, 
+                  box.padding = unit(0.5, "lines"),
+                  max.overlaps = 50) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  # coord_sf() +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60)) +
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_neutral_k5_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 17.2 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 17.3 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- nadmixk5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 17.4 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- nadmixk5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 17.5 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r, eval=FALSE}
+ggplot() + 
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+With pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "populations", "figures", "neuro-admixture_neutral_k5_interpolated_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,4097 @@
+---
+title: "Aedes albopictus SNP chip - Ancestry analysis with LEA for the SNP sets comparying the proportion of SNPs by effect."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+# Libraries
+```{r, message=FALSE, results='hide'}
+library(LEA)
+library(vcfR)
+library(RColorBrewer)
+library(ggplot2)
+library(adegenet)
+library(ape)
+library(tidyverse)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(colorout)
+library(extrafont)
+library(scales)
+library(stringr)
+library(ggtext)
+library(flextable)
+library(officer)
+library(raster)
+library(sf)
+library(ggspatial)
+library(scatterpie)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+```
+
+## 1. SNPs sets
+
+At the end of the functional annotation Markdown, we created 3 sets of SNPs following the WGS proportions by effect and 3 sets of SNPs using the same number of SNPs but randomly selected.
+
+Check the sets
+```{bash}
+ls output/SnpEff/chip_new_proportions/sets
+```
+We wrote code to randomly select 3 sets for each group (random and set). The sets we used:
+Following wgs proportion: set3, set5 and set10
+Now following wgs proportions: random2, random8 and random9
+
+Now we can create vcf to use with LEA
+
+Create vcfs and files for PCA
+
+Set3
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/set3.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/set3 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/set3.log
+```
+
+
+Set5
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/set5.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/set5 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/set5.log
+```
+
+
+Set10
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/set10.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/set10 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/set10.log
+```
+
+
+random2
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/random2.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/random2 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/random2.log
+```
+
+
+random8
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/random8.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/random8 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/random8.log
+```
+
+
+random9
+```{bash}
+plink2 \
+--allow-extra-chr \
+--bfile output/populations/file7 \
+--extract output/SnpEff/chip_new_proportions/sets/random9.txt \
+--export vcf \
+--pca allele-wts \
+--freq \
+--out output/variant_proportions/random9 \
+--silent;
+grep 'variants\|samples' output/variant_proportions/random9.log
+```
+
+Let's parse the .log file to get the number of SNPs in each file
+```{r}
+# Load necessary libraries
+library(stringr)
+
+# Specify the directory containing the .log files
+dir_path <- "output/variant_proportions"
+
+# Get a list of all the .log files in the directory
+log_files <- list.files(path = dir_path, pattern = "\\.log$", full.names = TRUE)
+
+# Function to extract the number of variants from a given file
+extract_variants <- function(file_path) {
+    content <- readLines(file_path)
+    line <- grep("variants remaining after main filters", content, value = TRUE)
+    return(as.numeric(unlist(str_extract_all(line, "\\d+"))))
+}
+
+# Get the variants from each log file
+variants <- sapply(log_files, extract_variants)
+
+# Get the file name without the .log extension
+file_names <- gsub(".log$", "", basename(log_files))
+
+# Create a data frame with the results
+result_df <- data.frame(FileName = file_names, Variants = variants)
+
+# Print the result
+print(result_df)
+
+```
+
+Let's create a table and save it
+```{r}
+# Create a flextable with zebra theme
+ft <- flextable(result_df)
+ft <- color(ft, color = "black", part = "header")
+ft <- bg(ft, bg = "gray", part = "header")
+ft <- color(ft, color = "black", part = "body")
+
+# Use zebra theme
+ft <- bg(ft, i = seq(2, nrow(result_df), by = 2), bg = "lightgray")
+ft
+# Save to DOCX
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+print(doc, target = here("output", "variant_proportions", "result_table.docx"))
+
+```
+
+
+## 2. PCA
+We created PCA files with Plink when we generated the vcf files. We can import them and create a PCA
+
+Check the files
+
+```{bash check_eigenvec}
+ls output/variant_proportions/*.eigenvec
+```
+
+```{bash check_eigenval}
+ls output/variant_proportions/*.eigenval
+```
+
+Import .eigenvec
+```{r}
+# Define the directory
+dir_path <- here("output","variant_proportions")
+
+# List all .eigenvec files in the directory
+file_paths <- list.files(path = dir_path, pattern = "\\.eigenvec$", full.names = TRUE)
+
+# Read all files into a list
+pca_list <- lapply(file_paths, function(path) {
+  read.delim(path, header = TRUE)
+})
+
+# Assign names to the list elements based on the filenames
+names(pca_list) <- sapply(file_paths, function(path) {
+  basename(tools::file_path_sans_ext(path))
+})
+```
+
+
+Import sample attributes
+```{r import_sample_attribute}
+# import sample attributes
+samples2 <- read.delim(
+  here(
+    "output", "populations", "Population_meta_data.txt"
+  ),
+  head = TRUE
+)
+#
+# check head of the file
+head(samples2)
+```
+
+Merge the data
+```{r}
+# Custom function to merge the PCA data frame with samples2
+merge_with_samples2 <- function(df) {
+  merged_df <-
+    merge(
+      df,
+      samples2,
+      by.x = "X.FID",
+      by.y = 6,
+      all.x = TRUE,
+      all.y = FALSE
+    ) %>%
+    na.omit()
+  return(merged_df)
+}
+
+# Apply the function to each dataframe in the list
+merged_list <- lapply(pca_list, merge_with_samples2)
+
+# Check the first few rows of one of the merged data frames for verification
+head(merged_list$random2)
+```
+
+Create data frames
+```{r}
+random2 <- merged_list$random2
+random8 <- merged_list$random8
+random9 <- merged_list$random9
+set10 <- merged_list$set10
+set3 <- merged_list$set3
+set5 <- merged_list$set5
+
+random2$source <- "random2"
+random8$source <- "random8"
+random9$source <- "random9"
+set10$source <- "set10"
+set3$source <- "set3"
+set5$source <- "set5"
+
+```
+
+Combine them
+```{r}
+combined_data <- rbind(random2, random8, random9, set10, set3, set5)
+head(combined_data)
+```
+
+Create the plot
+```{r, fig.width=8, fig.height=8, warning=FALSE}
+# source the plotting function
+source(here("scripts", "analysis", "my_theme2.R"))
+
+ggplot(combined_data, aes(x = PC1, y = PC2)) +
+  geom_point(
+    aes(fill = country),
+    size = 1,
+    shape = 21,
+    color = "gray"
+  ) +
+  stat_ellipse(
+    aes(fill = country, group = country),
+    geom = "polygon",
+    alpha = 0.2,
+    level = 0.8,
+    segments = 40,
+    color = NA,
+    show.legend = FALSE
+  ) +
+  my_theme() +
+  facet_wrap( ~ source, ncol = 3) +
+  labs(
+    title = "PCA Plot SNP sets",
+    x = "PC1",
+    y = "PC2",
+    fill = "Country",
+    caption = "All sets had ~ 34k SNPs. Bottow row following the WGS variant proportions by effect."
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1, "lines"),
+    plot.caption = element_text(face = "italic", hjust = 1)  # Make the caption italicized
+  )
+
+
+# Save plot
+ggsave(
+  here(
+    "output", "variant_proportions", "figures", "PCA_sets.pdf"
+  ),
+  width  = 6,
+  height = 8,
+  units  = "in"
+)
+```
+
+
+## 3. Acestry analysis
+
+### 3.1 set3
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "set3.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/set3.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_set3.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+#### 3.1.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set3.snmf", "K5", "run1","set3_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for set3.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "set3.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.1.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set3.snmf", "K5", "run1","set3_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "variant_proportions", "figures", "set3_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 3.2 set5
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "set5.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/set5.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_set5.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+
+
+#### 3.2.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set5.snmf", "K5", "run1","set5_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+# unseen_pckmeans.7.Q
+# pckmeans.7.Q
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF0000",
+    "v3" = "#00FF00",
+    "v4" = "#FF00FF",
+    "v5" = "#0000FF"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for set3.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "set5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.2.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set5.snmf", "K5", "run1","set5_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF0000",
+    "v3" = "#00FF00",
+    "v4" = "#FF00FF",
+    "v5" = "#0000FF"
+  )
+
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "variant_proportions", "figures", "set5_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+### 3.3 set10
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "set10.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/set10.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_set10.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+
+
+#### 3.3.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set10.snmf", "K5", "run1","set10_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FF00FF",
+    "v2" = "#00FF00",
+    "v3" = "#0000FF",
+    "v4" = "#FFFF00",
+    "v5" = "#FF0000"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for set10.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "set10.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.3.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "set10.snmf", "K5", "run1","set10_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FF00FF",
+    "v2" = "#00FF00",
+    "v3" = "#0000FF",
+    "v4" = "#FFFF00",
+    "v5" = "#FF0000"
+  )
+
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "variant_proportions", "figures", "set10_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 3.4 random2
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "random2.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/random2.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_random2.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+
+
+#### 3.4.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random2.snmf", "K5", "run1","random2_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FF00FF",
+    "v3" = "#FF0000",
+    "v4" = "#FFFF00",
+    "v5" = "#0000FF"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for random2.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "random2.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.4.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random2.snmf", "K5", "run1","random2_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FF00FF",
+    "v3" = "#FF0000",
+    "v4" = "#FFFF00",
+    "v5" = "#0000FF"
+  )
+
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "variant_proportions", "figures", "random2_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 3.5 random8
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "random8.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/random8.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_random8.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+
+
+#### 3.5.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random8.snmf", "K5", "run1","random8_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF00FF",
+    "v3" = "#0000FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for random8.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "random8.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.5.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random8.snmf", "K5", "run1","random8_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#FF00FF",
+    "v3" = "#0000FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# # 
+ggsave(
+  here("output", "variant_proportions", "figures", "random8_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+### 3.6 random9
+
+Clean env and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import the data
+```{r}
+genotype <- here(
+    "output", "variant_proportions", "random9.vcf"
+  )
+
+d <- read.vcfR(
+  genotype
+) 
+```
+
+
+Population and individuals information
+```{r}
+inds_full <- attr(d@gt,"dimnames")[[2]]
+inds_full <- inds_full[-1]
+a <- strsplit(inds_full, '_')
+pops <- unname(sapply(a, FUN = function(x) return(as.character(x[1])))) 
+table(pops)
+pops <- factor(pops)
+inds <- unname(sapply(a, FUN = function(x) return(as.character(x[2]))))
+```
+
+Convert format
+```{r}
+vcf2geno(genotype, gsub(".vcf", ".geno", genotype))
+vcf2lfmm(genotype, gsub(".vcf", ".lfmm", genotype))
+```
+
+
+Run LEA
+```{r, eval=FALSE}
+# set output dir
+setwd(
+  here(
+    "output", "variant_proportions"
+  )
+)
+# main options
+# K = number of ancestral populations
+# entropy = TRUE computes the cross-entropy criterion, # CPU = 4 is the number of CPU used (hidden input) project = NULL
+project = snmf(
+  genotype,
+  K = 1:25,
+  project = "new",
+  repetitions = 1,
+  alpha = 5,
+  tolerance = 0.0001,
+  percentage = 0.5,
+  iterations = 200, 
+  ploidy = 2,
+  seed = 13,
+  CPU = 4,
+  entropy = TRUE
+)
+```
+
+```{r}
+project = load.snmfProject("output/variant_proportions/random9.snmfProject")
+```
+
+Cross entropy
+
+```{r}
+# Open a new pdf file
+pdf(here("output","variant_proportions","figures","cross_entropy_random9.pdf"), width = 6, height = 4)
+
+# Create your plot
+plot(project, col = "pink", pch = 19, cex = 1.2)
+
+# Close the pdf file
+dev.off()
+plot(project, col = "pink", pch = 19, cex = 1.2)
+```
+
+
+
+
+#### 3.6.1 Structure plot
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random9.snmf", "K5", "run1","random9_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import sample locations
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+Structure plot
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- leak5 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+color_palette <-
+  c(
+    "v1" = "#0000FF",
+    "v2" = "#FF00FF",
+    "v3" = "#FFFF00",
+    "v4" = "#00FF00",
+    "v5" = "#FF0000"
+  )
+ 
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n LEA inference for k1:25 for random9.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+ggsave(
+  here("output", "variant_proportions", "figures", "random9.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+#### 3.6.2 Interploation over map
+
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r}
+# Matrix
+leak5 <- read_delim(
+  here("output", "variant_proportions", "random9.snmf", "K5", "run1","random9_r1.5.Q"),
+  delim = " ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(leak5)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+leak5 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(leak5)
+
+head(leak5)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+leak5 <- leak5 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(leak5)
+```
+
+Import samples attributes
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "sampling_loc.rds"))
+# head(sampling_loc)
+
+pops <- sampling_loc |>
+  filter(
+    Region == "Asia"
+  ) |>
+  dplyr::select(
+    Abbreviation, Latitude, Longitude, Pop_City, Country
+  )
+
+head(pops)
+```
+
+Merge with pops
+```{r}
+# Add an index column to Q_tibble
+leak5$index <- seq_len(nrow(leak5))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    leak5,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+    "v1" = "#0000FF",
+    "v2" = "#FF00FF",
+    "v3" = "#FFFF00",
+    "v4" = "#00FF00",
+    "v5" = "#FF0000"
+  )
+```
+
+Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+Make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- leak5 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+countries_with_data <- unique(df1$Country)
+
+# Filtering the world data to include only the countries in your data
+selected_countries <- world |>
+  filter(admin %in% countries_with_data)
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(80),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+ 
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- leak5 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+ 
+# This adds the info for a regular lat-long projection
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+Plot with pies
+```{r, fig.width=9, fig.height=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+ggplot() +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(0.5, "lines")
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = 1), 
+                  cols = c("v1", "v2", "v3", "v4", "v5"), color = NA) +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf()
+# 
+ggsave(
+  here("output", "variant_proportions", "figures", "random9_map.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+) 
+```
+
+
+```{r, fig.width=9, fig.height=8}
+library(ggforce)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v5)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 1.1
+
+ggplot() +
+  geom_sf(
+  data = world,
+  fill = NA,
+  color = "gray",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  # geom_point(
+  #   data = df_mean,
+  #   aes(x = Longitude, y = Latitude),
+  #   color = "black",
+  #   size = .3
+  # ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude + nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.75,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, 
+        y0 = Latitude, 
+        r = 0.75),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 2,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 4,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +
+  coord_sf(xlim = c(60, 150), ylim = c(-10, 60))
+
+
+ggsave(
+  here("output", "variant_proportions", "figures", "new.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

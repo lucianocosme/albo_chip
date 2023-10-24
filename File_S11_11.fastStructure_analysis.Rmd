@@ -1,0 +1,3061 @@
+---
+title: "Aedes albopictus SNP chip - Ancestry analysis with fastStructure"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+## 1. R libraries and installing fastStructure
+
+```{r load_libraries, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(colorout)
+library(dplyr)
+library(ggplot2)
+library(extrafont)
+library(hrbrthemes)
+library(hrbrmisc)
+library(ggstatsplot)
+library(flextable)
+library(officer)
+```
+
+
+Our first step is to create a conda environment and install fastStructure on the cluster.
+
+```{bash create_conda_env, eval=FALSE}
+# first create a interactive session with 4 CPU's and 20GB memory
+salloc --time=01:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120
+cd /home/lvc26/project
+# download fastStructure in a directory.
+git clone https://github.com/rajanil/fastStructure
+# navigate to fastStructure dir
+cd fastStructure
+# then load miniconda
+module load miniconda/23.3.1
+# create new environment
+conda create --name fastStructure -c bioconda python=2.7
+# activate the new env
+conda activate fastStructure
+# to deactivate it later
+conda deactivate
+# if you want to remove it
+# conda env remove -n fastStructure
+```
+
+Check the required fastStructure dependencies at https://github.com/rajanil/fastStructure
+```
+fastStructure depends on
+
+Numpy
+Scipy
+Cython
+GNU Scientific Library
+```
+Install dependencies.
+```{bash install_dependencies_and_compile, eval=FALSE}
+# scipy and numpy (it already installs numpy)
+pip install scipy
+# Successfully installed numpy-1.16.6 scipy-1.2.3
+# cython
+pip install cython==0.27.3
+# gsl
+conda install gsl
+#
+# identify the path to the library files libgsl.so and libgslcblas.so, and header file gsl/gsl_sf_psi.h that are part of your GSL installation.
+# run to check the options
+gsl-config -
+#################################################################################################
+# get paths - on Mccleary
+gsl-config --prefix
+# /gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure
+gsl-config --libs
+# -L/gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure/lib -lgsl -lgslcblas -lm
+gsl-config --cflags
+# -I/gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure/include
+# export their paths
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure
+export CFLAGS="-I/gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure/include"
+export LDFLAGS="-L/gpfs/gibbs/project/powell/lvc26/conda_envs/fastStructure/lib -lgsl -lgslcblas -lm"
+
+#
+# Then set these environment variables
+source ~/.bashrc
+# navigate to the directory to compile inside faststructure dir
+cd /home/lvc26/project/fastStructure/vars
+# compile
+python setup.py build_ext -f --inplace
+# it might give you some warnings
+# To compile the main cython scripts, navigate to fastStructure directory (cd .. from the vars directory)
+cd ..
+python setup.py build_ext -f --inplace
+# it will give you several warnings
+# last step is to check if it works
+python structure.py
+# change rights
+chmod 775 structure.py chooseK.py
+# check python path
+echo $PYTHONPATH
+# then to run it from other places
+# add fastStructure to the python path
+export PYTHONPATH=/home/lvc26/project/fastStructure
+# Then set these environment variables
+source ~/.bashrc
+# now from any directory you can call fastStructure using -m (module)
+python -m structure # your parameters
+```
+```
+Here is how you can use this script
+
+Usage: python structure.py
+	 -K <int> (number of populations)
+	 --input=<file> (/path/to/input/file)
+	 --output=<file> (/path/to/output/file)
+	 --tol=<float> (convergence criterion; default: 10e-6)
+	 --prior={simple,logistic} (choice of prior; default: simple)
+	 --cv=<int> (number of test sets for cross-validation, 0 implies no CV step; default: 0)
+	 --format={bed,str} (format of input file; default: bed)
+	 --full (to output all variational parameters; optional)
+	 --seed=<int> (manually specify seed for random number generator; optional)
+```
+
+How to use fastStructure interactively or via batch script.
+```{bash how_to_use_fastStructure_clusters, eval=FALSE}
+salloc --time=01:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120
+module load miniconda/23.3.1
+conda activate fastStructure
+export PYTHONPATH=/home/lvc26/project/fastStructure
+# export PYTHONPATH=/home/lvc26/project/fastStructure
+python -m structure # rest of the command
+# export PATH=$PATH:/ycga-gpfs/project/powell/lvc26/fastStructure
+# then you are ready to run it.
+# if you are using a batch script, then just use:
+source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;
+module load miniconda/23.3.1
+conda activate fastStructure
+export PYTHONPATH=/home/lvc26/project/fastStructure
+# if it does not work, check your miniconda installation
+# to get information about your miniconda on the clusters (probably is similar to mine)
+conda info | grep -i 'base environment'
+```
+
+## 2. Run fastStructure
+
+We ran fastStructure with several data sets testing k1:30 with 100 runs. Now, we can run fastStructure with the final data sets
+
+### 2.1 Neutral set
+Create a directory for each run
+```{bash make_dirs, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/neutral
+for i in $(seq -w 1 10)
+do
+  mkdir run$i
+done
+```
+
+Now we can generate the full script for dsq (not showing here, because it has 2,000 lines).
+
+#### 2.1.1 Simple prior
+
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq -w 1 10); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/neutral --output=/gpfs/ycga/project/caccone/lvc26/faststructure/neutral/run$run/simple --prior=simple --full --cv=10 --tol=10e-6"
+    done
+done > dsq1.txt
+```
+
+#### 2.1.2 Logistic prior
+
+I used 10 runs for the neutral set because it is around 9k SNPs. For other data sets we can do less runs because it takes too long.
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq -w 1 10); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/neutral --output=/gpfs/ycga/project/caccone/lvc26/faststructure/neutral/run$run/logistic --prior=logistic --full --cv=10 --tol=10e-6"
+    done
+done > dsq2.txt
+```
+
+
+Load dsq, and then create the batch file. Check the dsq --help
+
+#### 2.1.3 Generate the dsq batch files
+
+```{r, eval=FALSE}
+module load dSQ/1.05
+##############################################
+#                 Simple
+##############################################
+dsq \
+--job-file dsq1.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+-t 24:00:00 \
+--mail-type END \
+--partition=scavenge \
+--job-name fastStr_s \
+--output /dev/null \
+--batch-file 1.simple.sh
+
+##############################################
+#                 Logistic
+##############################################
+dsq \
+--job-file dsq2.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+--time 7-00:00:00 \
+--mail-type END \
+--partition=week \
+--job-name fastStr_L \
+--output /dev/null \
+--batch-file 2.logistic.sh
+```
+
+Before we submit all jobs, it is a good practice to submit only one job of the array and see if it runs without
+problems.
+
+```{bash, eval=FALSE}
+# We will run a random job from our array to see if works
+#sbatch --array=$((1 + $RANDOM % 2000)) 1.simple.sh  # for random job
+# or 
+sbatch --array=1 1.simple.sh  # to run the first job
+# check status
+dsqa -j 6273617 # add job number here
+```
+
+If it runs without problems, we can submit all jobs.
+
+```{bash, eval=FALSE}
+sbatch 1.simple.sh
+# Submitted batch job 6273630
+sbatch 2.logistic.sh
+# Submitted batch job 36273940
+```
+
+Check the jobs status.
+
+```{bash, eval=FALSE}
+# check status
+dsqa -j 6273630 # simple
+dsqa -j 6273940 # logistic all completed :)
+```
+
+Run autopsy once it is done.
+
+```{bash, eval=FALSE}
+# simple, all completed
+# logistic, some jobs timed out
+# get the jobs we need to re-run
+dsqa -j 37569748 -f dsq2.txt -s TIMEOUT > rerun_jobs.txt; wc -l rerun_jobs.txt # 30 jobs
+# re submit the 30 jobs 
+dsq \
+--job-file rerun_jobs.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+-t 120:00:00 \
+--status-dir /gpfs/ysm/project/powell/lvc26/albopictus/fastStructure/logs \
+--mail-type END \
+--partition=general \
+--job-name logistic2 \
+--output logs/logistic_rerun-%A_%a-%N.txt \
+--batch-file 2.1logistic.sh \
+--submit
+#
+# check status
+dsqa -j 38086185
+```
+
+#### 2.1.4 Parse files from runs 
+
+Next, we will need to parse the results and make a plot. Our fist step is done on the cluster. We need to grab the Q matrices and the log files from our runs. We start wit the simple priors. We first find the optimal number of Ks. Then we use pong to parse all runs and generate one structure like plot. You can get pong here https://github.com/ramachandran-lab/pong. I installed pong on my base environment in my laptop. You can create am environment if you want: check their manual to follow instructions.
+
+Data location
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/neutral
+```
+
+
+#### 2.1.5  Choose k simple plot
+
+Our first step is to use fastStructure script chooseK.py to find the number of ancestral populations. The main reason we did 10 runs is because we don't find the same optimal k for every run. Since we already created a conda environment to run fastStructure, we can activate it, and run chooseK.
+
+First for our runs with simple prior.
+
+```{bash, eval=FALSE}
+salloc --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120
+module load miniconda/23.3.1
+conda activate fastStructure
+export PYTHONPATH=/home/lvc26/project/fastStructure
+
+
+# simple 10 runs
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/neutral/run*
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/simple | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/simple | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > simple_prior_models.txt
+
+# logistic 10 runs
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/neutral/run*
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/logistic | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/logistic | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > logistic_prior_models.txt
+```
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/neutral/*_prior_models.txt /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/neutral
+```
+
+We can make a plot with the Ks. Let's import the data in R.
+```{r}
+# function to import our choosek.py data
+import_fastStructure <- function(file) {
+  # import as a tibble and set columns as integers
+  dat <- read_delim(
+    file,
+    col_names      = TRUE,
+    show_col_types = FALSE,
+    col_types      = "iii"
+  )
+
+  # get columns we need and make it long for plotting
+  dat <- dat |>
+    gather(
+      structure, likelihood, -run
+    )
+
+  # rename the columns by index
+  dat <- dat |>
+    rename(
+      run   = 1,
+      model = 2,
+      k     = 3
+    )
+  return(dat)
+}
+# we can save the function to source it later
+dump(
+  "import_fastStructure",
+  here(
+    "scripts", "analysis", "import_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Now we can use the function to import the data
+```{r}
+# we can use our function with here to import the data
+choose_k_simple <- 
+  import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "neutral","simple_prior_models.txt"
+  )
+)
+```
+
+Function to plot fastStructure choosek.py results
+```{r}
+# function to plot our choosek.py data
+plot_fastStructure <- function(df) {
+  df |>
+    ggplot() +
+    geom_line(
+      aes(
+        x              = run,
+        y              = k,
+        color          = model
+      ),
+      linewidth = 1
+    ) +
+    scale_colour_manual(
+      "model",
+      values = c(
+        structure      = "#9d60ff",
+        likelihood     = "#ffc08c"
+      ),
+      labels = c(
+        "Maximizes \n Likelihood \n", "Explain \n Structure"
+      )
+    ) +
+    labs(
+      x                = "Run",
+      y                = "K",
+      title            = "fastStructure",
+      caption          = "algorithm runs for choices of K ranging from 1 to 30"
+    ) +
+    hrbrthemes::theme_ipsum(
+      base_family = "",
+      axis_text_size = 12,
+      axis_title_size = 14,
+      plot_margin = margin(
+        10, 10, 10, 10
+      ),
+      grid = TRUE,
+      grid_col = "#fabbe2"
+    ) +
+    theme(
+      panel.grid.major = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      panel.grid.minor = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      legend.text = element_text(
+        size = 12
+      ),
+      legend.title = element_text(
+        size           = 14,
+        face           = "bold"
+      ),
+      legend.position = "right"
+    )
+}
+# we can save the function to source it later
+dump(
+  "plot_fastStructure",
+  here(
+    "scripts", "analysis", "plot_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Use our function to plot k values 
+```{r}
+plot_fastStructure(
+  choose_k_simple
+) +
+  labs(
+    subtitle = "simple prior"
+  )
+
+# save plot
+ggsave(
+  here(
+    "output", "figures", "fastStructure_neutral_simple_prior_k1_k30.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+
+#### 2.1.6 Choose k logistic plot
+
+Import logistic data
+```{r}
+# import the data
+choose_k_logistic <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "neutral","logistic_prior_models.txt"
+  )
+)
+```
+ 
+Make plot of the data
+```{r}
+# make plot
+plot_fastStructure(
+  choose_k_logistic
+) +
+  labs(
+    subtitle = "logistic prior"
+  )
+#
+# save plot
+ggsave(
+  here(
+    "output", "figures", "fastStructure_neutral_logistic_prior_k1_k30.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+#### 2.1.7 Statistical tests - comparing simple and logistic prior runs
+
+```{r}
+set.seed(123)  # for reproducibility
+# import data
+# simple
+simple1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "neutral", "simple_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "simple"
+  )
+#
+# logistic
+logistic1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "neutral", "logistic_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "logistic"
+  )
+#
+# rbind data set
+fastStruc_prior <- rbind(
+  simple1, logistic1
+) |>
+  mutate(
+    prior = factor(
+      prior
+    )
+  )
+#
+# run stats
+grouped_ggbetweenstats(
+  data = fastStruc_prior,
+  x = prior,
+  y = k,
+  grouping.var = model,
+  p.adjust.method = "bonferroni",
+  palette = "default_jama",
+  package = "ggsci",
+  plotgrid.args = list(
+    nrow = 1
+  ),
+  annotation.args = list(
+    title = "Comparison of fastStructure prior"
+  )
+)
+# # save plot
+ggsave(
+  here(
+    "output", "populations", "figures", "welch_faststructure_neutral_prior_comparisons.pdf"
+  ),
+  width = 11,
+  height = 8,
+  units = "in"
+)
+```
+
+The number of model components that explain the structure in the data is different from Admixture. For our models explaining the structure in the data, we have simple: k=9, and logistic: k=12, whereas Admixture indicated k=5. We can plot k=5 to see how it compares to the Admxiture, LEA, and neuro-admixture.
+
+
+#### 2.1.8 pong
+
+We first need to find the most common mode among our runs. We do not need to plot all matrices, we can plot the first 12 using pong.
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats --include='*/' --include='*.meanQ' --exclude='*' lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/neutral* /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/
+```
+
+
+##### 2.1.8.1 simple prior
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/faststructure/neutral/run*/simple* | tail
+```
+
+Create filemap2.txt
+```{bash, eval=FALSE}
+for k in $(seq 2 12); do
+    for run in $(seq -w 1 10); do
+        echo "k$k""r$run $k faststructure/neutral/run$run/simple.$k.meanQ" | tr ' ' '\t'
+    done
+done > output/populations/filemap2.txt;
+head -n 5 output/populations/filemap2.txt
+```
+
+
+```{bash, eval=FALSE}
+wc -l output/populations/filemap2.txt
+```
+
+Create ind2pop
+```{bash, eval=FALSE}
+rm output/populations/ind2pop.txt;
+cat output/populations/snps_sets/neutral.fam | awk '{print $1}' > output/populations/ind2pop.txt;
+head -n 5 output/populations/ind2pop.txt
+```
+
+Run on the terminal and not on RStudio.
+```{bash, eval=FALSE}
+# on your computer to visualize the results
+pong \
+--filemap output/populations/filemap2.txt \
+--ind2pop output/populations/ind2pop.txt  \
+--dist_metric jaccard \
+--sim_threshold 0.82 \
+--greedy \
+--force \
+--output_dir output/populations/sim_threshold_0.82 \
+--verbose
+```
+Check for the modes for k=5. Two modes: one with 8 runs and 1 with 2 runs. We can use run01 for our structure plot.
+
+
+###### 2.1.8.1.1 Create plot simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "neutral", "run01", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#FF0000",
+    "v3" = "#FF00FF",
+    "v4" = "#FFFF00",
+    "v5" = "#0000FF"
+    )
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure simple prior for k1:30 with 9,047 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_simple_neutral_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+##### 2.1.8.2 logistic prior
+
+Check the downloaded data
+```{bash}
+ls -1 output/populations/faststructure/neutral/run*/logistic* | tail
+```
+
+Create filemap2.txt
+```{bash}
+# we will use the 10 runs to make the plot. 
+# loop to generate filemap2.txt with k values from 2 to 12. I use tab instead of space. We need that for pong.
+for k in $(seq 2 12); do
+    for run in $(seq -w 1 10); do
+        echo "k$k""r$run $k faststructure/neutral/run$run/logistic.$k.meanQ" | tr ' ' '\t'
+    done
+done > output/populations/filemap2.txt;
+head -n 5 output/populations/filemap2.txt
+```
+
+
+```{bash}
+wc -l output/populations/filemap2.txt
+```
+
+Create ind2pop
+```{bash}
+rm output/populations/ind2pop.txt;
+cat output/populations/snps_sets/neutral.fam | awk '{print $1}' > output/populations/ind2pop.txt;
+head -n 5 output/populations/ind2pop.txt
+```
+
+Run on the terminal and not on RStudio.
+```{bash, eval=FALSE}
+# on your computer to visualize the results
+pong \
+--filemap output/populations/filemap2.txt \
+--ind2pop output/populations/ind2pop.txt  \
+--dist_metric jaccard \
+--sim_threshold 0.82 \
+--greedy \
+--force \
+--output_dir output/populations/sim_threshold_0.82 \
+--verbose
+```
+Check for the modes for k=5. Seven modes. The mode with the most runs had 3 runs. We can plot run02
+
+###### 2.1.8.2.1 Create plot simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "neutral", "run02", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "neutral.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#FF0000",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FFFF00",
+    "v5" = "#00FF00"
+  )
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure logistic prior for k1:30 with 9,047 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_logistic_neutral_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 2.2 r2 0.01 set
+Create a directory for each run
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01
+for i in $(seq 1 10) # we will not use -w because we will run 1 run with the logistic prior
+do
+  mkdir run$i
+done
+```
+
+Now we can generate the full script for dsq (not showing here, because it has 2,000 lines).
+
+#### 2.2.1 Simple prior
+
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq 1 10); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/r2_0.01 --output=/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/run$run/simple --prior=simple --full --cv=10 --tol=10e-6"
+    done
+done > dsq1.txt
+```
+
+#### 2.2.2 Logistic prior
+
+Only 1 run
+I used 10 runs for the neutral set because it is around 9k SNPs. For other data sets we can do less runs because it takes too long.
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq 1); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/r2_0.01 --output=/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/run$run/logistic --prior=logistic --full --cv=10 --tol=10e-6"
+    done
+done > dsq2.txt
+```
+
+
+Load dsq, and then create the batch file. Check the dsq --help
+
+#### 2.2.3 Generate the dsq batch files
+
+```{r, eval=FALSE}
+module load dSQ/1.05
+##############################################
+#                 Simple
+##############################################
+dsq \
+--job-file dsq1.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+-t 24:00:00 \
+--mail-type END \
+--partition=scavenge \
+--job-name fastStr_s01 \
+--output /dev/null \
+--batch-file 1.simple.sh
+
+
+##############################################
+#                 Logistic
+##############################################
+dsq \
+--job-file dsq2.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+--time 7-00:00:00 \
+--mail-type END \
+--partition=week \
+--job-name fastStr_L01 \
+--output /dev/null \
+--batch-file 2.logistic.sh
+```
+
+
+Submit
+```{bash, eval=FALSE}
+sbatch 1.simple.sh
+dsqa -j 6274417 
+
+sbatch 2.logistic.sh
+dsqa -j 6274725
+# completed
+```
+
+
+
+#### 2.2.4 Parse files from runs 
+
+Next, we will need to parse the results and make a plot. Our fist step is done on the cluster. We need to grab the Q matrices and the log files from our runs. We start wit the simple priors. We first find the optimal number of Ks. Then we use pong to parse all runs and generate one structure like plot. You can get pong here https://github.com/ramachandran-lab/pong. I installed pong on my base environment in my laptop. You can create a environment if you want, check their manual to follow instructions.
+
+Data location
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01
+```
+
+
+#### 2.2.5  Choose k simple plot
+
+Our first step is to use fastStructure script chooseK.py to find the number of ancestral populations. The main reason we did 10 runs is because we don't find the same optimal k for every run. Since we already created a conda environment to run fastStructure, we can activate it, and run chooseK.
+
+First for our runs with simple prior.
+
+```{bash, eval=FALSE}
+salloc --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120
+module load miniconda/23.3.1
+conda activate fastStructure
+export PYTHONPATH=/home/lvc26/project/fastStructure
+
+
+# simple 10 runs
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/run*
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/simple | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/simple | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > simple_prior_models.txt
+
+# logistic 1 run
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/run1
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/logistic | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/logistic | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > logistic_prior_models.txt
+```
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/*_prior_models.txt /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/r2_0.01
+```
+
+We can make a plot with the Ks. Let's import the data in R.
+```{r}
+# function to import our choosek.py data
+import_fastStructure <- function(file) {
+  # import as a tibble and set columns as integers
+  dat <- read_delim(
+    file,
+    col_names      = TRUE,
+    show_col_types = FALSE,
+    col_types      = "iii"
+  )
+
+  # get columns we need and make it long for plotting
+  dat <- dat |>
+    gather(
+      structure, likelihood, -run
+    )
+
+  # rename the columns by index
+  dat <- dat |>
+    rename(
+      run   = 1,
+      model = 2,
+      k     = 3
+    )
+  return(dat)
+}
+# we can save the function to source it later
+dump(
+  "import_fastStructure",
+  here(
+    "scripts", "analysis", "import_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Now we can use the function to import the data
+```{r}
+# we can use our function with here to import the data
+choose_k_simple <- 
+  import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.01","simple_prior_models.txt"
+  )
+)
+```
+
+Function to plot fastStructure choosek.py results
+```{r}
+# function to plot our choosek.py data
+plot_fastStructure <- function(df) {
+  df |>
+    ggplot() +
+    geom_line(
+      aes(
+        x              = run,
+        y              = k,
+        color          = model
+      ),
+      linewidth = 1
+    ) +
+    scale_colour_manual(
+      "model",
+      values = c(
+        structure      = "#9d60ff",
+        likelihood     = "#ffc08c"
+      ),
+      labels = c(
+        "Maximizes \n Likelihood \n", "Explain \n Structure"
+      )
+    ) +
+    labs(
+      x                = "Run",
+      y                = "K",
+      title            = "fastStructure",
+      caption          = "algorithm runs for choices of K ranging from 1 to 30"
+    ) +
+    hrbrthemes::theme_ipsum(
+      base_family = "",
+      axis_text_size = 12,
+      axis_title_size = 14,
+      plot_margin = margin(
+        10, 10, 10, 10
+      ),
+      grid = TRUE,
+      grid_col = "#fabbe2"
+    ) +
+    theme(
+      panel.grid.major = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      panel.grid.minor = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      legend.text = element_text(
+        size = 12
+      ),
+      legend.title = element_text(
+        size           = 14,
+        face           = "bold"
+      ),
+      legend.position = "right"
+    )
+}
+# we can save the function to source it later
+dump(
+  "plot_fastStructure",
+  here(
+    "scripts", "analysis", "plot_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Use our function to plot k values 
+```{r}
+plot_fastStructure(
+  choose_k_simple
+) +
+  labs(
+    subtitle = "simple prior"
+  )
+
+# save plot
+ggsave(
+  here(
+    "output", "figures", "fastStructure_r2_0.01_simple_prior_k1_k30.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+
+#### 2.2.6 Choose k logistic 
+
+Import logistic data
+```{r}
+# import the data
+choose_k_logistic <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.01", "logistic_prior_models.txt"
+  )
+)
+# only 1 run
+choose_k_logistic
+```
+ 
+#### 2.2.7 Statistical tests - comparing simple and logistic prior runs
+
+```{r, warning=FALSE}
+set.seed(123)  # for reproducibility
+# import data
+# simple
+simple1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.01", "simple_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "simple"
+  )
+#
+# logistic
+logistic1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.01", "logistic_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "logistic"
+  )
+#
+# rbind data set
+fastStruc_prior <- rbind(
+  simple1, logistic1
+) |>
+  mutate(
+    prior = factor(
+      prior
+    )
+  )
+#
+# run stats
+grouped_ggbetweenstats(
+  data = fastStruc_prior,
+  x = prior,
+  y = k,
+  grouping.var = model,
+  p.adjust.method = "bonferroni",
+  palette = "default_jama",
+  package = "ggsci",
+  plotgrid.args = list(
+    nrow = 1
+  ),
+  annotation.args = list(
+    title = "Comparison of fastStructure prior"
+  )
+)
+# # save plot
+ggsave(
+  here(
+    "output", "populations", "figures", "welch_faststructure_r2_0.01_prior_comparisons.pdf"
+  ),
+  width = 11,
+  height = 8,
+  units = "in"
+)
+```
+
+The number of model components that explain the structure in the data is different from Admixture. For our simple model explaining the structure in the data we have k=13, and for logistic k=20, whereas Admixture indicated k=5. We can plot k=5 to see how it compares to the Admixture, LEA, and neuro-admixture.
+
+#### 2.2.8 pong
+We first need to find the most common mode among runs. We do not need to plot all matrices, we can plot the first 12 using pong.
+
+Download the data
+```{bash, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster
+rsync -chavzP --stats --include='*/' --include='*.meanQ' --exclude='*' lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01* /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/
+```
+
+
+##### 2.2.8.1 simple prior
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/faststructure/r2_0.01/run*/simple* | tail
+```
+
+Create filemap2.txt
+```{bash, eval=FALSE}
+# we will use the 10 runs to make the plot. 
+# loop to generate filemap2.txt with k values from 2 to 12. I use tab instead of space. We need that for pong.
+for k in $(seq 2 12); do
+    for run in $(seq 1 10); do
+        echo "k$k""r$run $k faststructure/r2_0.01/run$run/simple.$k.meanQ" | tr ' ' '\t'
+    done
+done > output/populations/filemap2.txt;
+head -n 5 output/populations/filemap2.txt
+```
+
+
+```{bash, eval=FALSE}
+wc -l output/populations/filemap2.txt
+```
+
+Create ind2pop
+```{bash, eval=FALSE}
+rm output/populations/ind2pop.txt;
+cat output/populations/snps_sets/r2_0.01.fam | awk '{print $1}' > output/populations/ind2pop.txt;
+head -n 5 output/populations/ind2pop.txt
+```
+
+Run on the terminal and not on RStudio.
+```{bash, eval=FALSE}
+# on your computer to visualize the results
+pong \
+--filemap output/populations/filemap2.txt \
+--ind2pop output/populations/ind2pop.txt  \
+--dist_metric jaccard \
+--sim_threshold 0.82 \
+--greedy \
+--force \
+--output_dir output/populations/sim_threshold_0.82 \
+--verbose
+```
+1 mode for k=5, so any run works.
+
+
+###### 2.2.8.1.1 Create plot of the simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.01", "run1", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#00FF00",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#0000FF"
+  )
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure simple prior for k1:30 with 20,931 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_simple_r2_0.01_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+##### 2.2.8.1 logistic prior
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/faststructure/r2_0.01/run*/logistic* | tail
+```
+We do not need to use pong because we have only 1 run for the logistic.
+
+###### 2.2.8.1.1 Create plot simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.01", "run1", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.01.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#00FF00",
+    "v2" = "#0000FF",
+    "v3" = "#FFFF00",
+    "v4" = "#FF00FF",
+    "v5" = "#FF0000"
+    )
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure logistic priopr for k1:30 with 20,931 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_logistic_r2_0.01_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+### 2.3 r2 0.1 set
+
+Create a directory for each run
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1
+for i in $(seq 1 10) # we will not use -w because we will run 1 run with the logistic prior
+do
+  mkdir run$i
+done
+```
+
+Now we can generate the full script for dsq (not showing here, because it has 2,000 lines).
+
+#### 2.3.1 Simple prior
+
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq 1 10); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/r2_0.1 --output=/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1/run$run/simple --prior=simple --full --cv=10 --tol=10e-6"
+    done
+done > dsq1.txt
+```
+
+#### 2.3.2 Logistic prior
+
+Only 1 run
+I used 10 runs for the neutral set because it is around 9k SNPs. For other data sets we can do less runs because it takes too long.
+```{bash, eval=FALSE}
+for k in $(seq 1 30); do
+    for run in $(seq 1); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/faststructure; source /vast/palmer/apps/avx2/software/miniconda/23.3.1/etc/profile.d/conda.sh;module load miniconda/23.3.1; conda activate fastStructure; export PYTHONPATH=/home/lvc26/project/fastStructure; python -m structure -K $k --input=/gpfs/ycga/project/caccone/lvc26/neuroadmix/snps_sets/r2_0.1 --output=/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1/run$run/logistic --prior=logistic --full --cv=10 --tol=10e-6"
+    done
+done > dsq2.txt
+```
+
+
+Load dsq, and then create the batch file. Check the dsq --help
+
+#### 2.3.3 Generate the dsq batch files
+
+```{r, eval=FALSE}
+module load dSQ/1.05
+##############################################
+#                 Simple
+##############################################
+dsq \
+--job-file dsq1.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+-t 24:00:00 \
+--mail-type END \
+--partition=scavenge \
+--job-name fastStr_s1 \
+--output /dev/null \
+--batch-file 1.simple.sh
+
+
+##############################################
+#                 Logistic
+##############################################
+dsq \
+--job-file dsq2.txt \
+--mem-per-cpu 1g \
+--cpus-per-task=1 \
+--time 7-00:00:00 \
+--mail-type END \
+--partition=week \
+--job-name fastStr_L1 \
+--output /dev/null \
+--batch-file 2.logistic.sh
+```
+
+
+Submit
+```{bash, eval=FALSE}
+sbatch 1.simple.sh
+dsqa -j 6274779
+
+sbatch 2.logistic.sh
+dsqa -j 6274782
+```
+
+
+
+#### 2.3.4 Parse files from runs 
+
+Next, we will need to parse the results and make a plot. Our fist step is done on the cluster. We need to grab the Q matrices and the log files from our runs. We start wit the simple priors. We first find the optimal number of Ks. Then we use pong to parse all 10 runs and generate one structure like plot. You can get pong here https://github.com/ramachandran-lab/pong. I installed pong on my base environment in my laptop. You can create a environment if you want, check their easy to follow instructions.
+
+Data location
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1
+```
+
+
+#### 2.3.5  Choose k simple plot
+
+Our first step is to use fastStructure script chooseK.py to find the number of ancestral populations. The main reason we did 10 runs is because we don't find the same optimal k for every run. Since we already created a conda environment to run fastStructure, we can activate it, and run chooseK.
+
+First for our runs with the simple prior.
+
+```{bash, eval=FALSE}
+salloc --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120
+module load miniconda/23.3.1
+conda activate fastStructure
+export PYTHONPATH=/home/lvc26/project/fastStructure
+
+
+# simple 10 runs
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1/run*
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/simple | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/simple | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > simple_prior_models.txt
+
+# logistic 1 run
+cat <(echo 'run likelihood structure') \
+<(for i in /gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.01/run1
+do
+	echo $i | sed 's@.*/@@' | sed 's/run/run /' ; python -m chooseK --input=$i/logistic | grep 'likelihood' | awk '{print $6, $8}'; python -m chooseK --input=$i/logistic | grep 'structure' |  awk '{print $6, $10}'
+done | xargs -n6 | awk '{print $2, $4, $6}') > logistic_prior_models.txt
+```
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1/*_prior_models.txt /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/r2_0.1
+```
+
+We can make a plot with the Ks. Let's import the data in R.
+```{r}
+# function to import our choosek.py data
+import_fastStructure <- function(file) {
+  # import as a tibble and set columns as integers
+  dat <- read_delim(
+    file,
+    col_names      = TRUE,
+    show_col_types = FALSE,
+    col_types      = "iii"
+  )
+
+  # get columns we need and make it long for plotting
+  dat <- dat |>
+    gather(
+      structure, likelihood, -run
+    )
+
+  # rename the columns by index
+  dat <- dat |>
+    rename(
+      run   = 1,
+      model = 2,
+      k     = 3
+    )
+  return(dat)
+}
+# we can save the function to source it later
+dump(
+  "import_fastStructure",
+  here(
+    "scripts", "analysis", "import_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Now we can use the function to import the data
+```{r}
+# we can use our function with here to import the data
+choose_k_simple <- 
+  import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.1","simple_prior_models.txt"
+  )
+)
+```
+
+Function to plot fastStructure choosek.py results
+```{r}
+# function to plot our choosek.py data
+plot_fastStructure <- function(df) {
+  df |>
+    ggplot() +
+    geom_line(
+      aes(
+        x              = run,
+        y              = k,
+        color          = model
+      ),
+      linewidth = 1
+    ) +
+    scale_colour_manual(
+      "model",
+      values = c(
+        structure      = "#9d60ff",
+        likelihood     = "#ffc08c"
+      ),
+      labels = c(
+        "Maximizes \n Likelihood \n", "Explain \n Structure"
+      )
+    ) +
+    labs(
+      x                = "Run",
+      y                = "K",
+      title            = "fastStructure",
+      caption          = "algorithm runs for choices of K ranging from 1 to 30"
+    ) +
+    hrbrthemes::theme_ipsum(
+      base_family = "",
+      axis_text_size = 12,
+      axis_title_size = 14,
+      plot_margin = margin(
+        10, 10, 10, 10
+      ),
+      grid = TRUE,
+      grid_col = "#fabbe2"
+    ) +
+    theme(
+      panel.grid.major = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      panel.grid.minor = element_line(
+        linetype       = "dashed",
+        linewidth      = 0.2
+      ),
+      legend.text = element_text(
+        size = 12
+      ),
+      legend.title = element_text(
+        size           = 14,
+        face           = "bold"
+      ),
+      legend.position = "right"
+    )
+}
+# we can save the function to source it later
+dump(
+  "plot_fastStructure",
+  here(
+    "scripts", "analysis", "plot_fastStructure.R"
+  ),
+  append = TRUE
+)
+```
+
+Use our function to plot k values 
+```{r}
+plot_fastStructure(
+  choose_k_simple
+) +
+  labs(
+    subtitle = "simple prior"
+  )
+
+# save plot
+ggsave(
+  here(
+    "output", "figures", "fastStructure_r2_0.1_simple_prior_k1_k30.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+
+#### 2.3.6 Choose k logistic 
+
+Import logistic data
+```{r}
+# import the data
+choose_k_logistic <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.1","logistic_prior_models.txt"
+  )
+)
+# only 1 run
+choose_k_logistic
+```
+ 
+#### 2.3.7 Statistical tests - comparing simple and logistic prior runs
+
+```{r, warning=FALSE}
+set.seed(123)  # for reproducibility
+# import data
+# simple
+simple1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.1", "simple_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "simple"
+  )
+#
+# logistic
+logistic1 <- import_fastStructure(
+  here(
+    "output", "populations","fastStructure", "r2_0.1", "logistic_prior_models.txt"
+  )
+) |>
+  mutate(
+    prior = "logistic"
+  )
+#
+# rbind data set
+fastStruc_prior <- rbind(
+  simple1, logistic1
+) |>
+  mutate(
+    prior = factor(
+      prior
+    )
+  )
+#
+# run stats
+grouped_ggbetweenstats(
+  data = fastStruc_prior,
+  x = prior,
+  y = k,
+  grouping.var = model,
+  p.adjust.method = "bonferroni",
+  palette = "default_jama",
+  package = "ggsci",
+  plotgrid.args = list(
+    nrow = 1
+  ),
+  annotation.args = list(
+    title = "Comparison of fastStructure prior"
+  )
+)
+# # save plot
+ggsave(
+  here(
+    "output", "populations", "figures", "welch_faststructure_r2_0.1_prior_comparisons.pdf"
+  ),
+  width = 11,
+  height = 8,
+  units = "in"
+)
+```
+
+The number of model components that explain the structure in the data is different from Admixture. For our simple model explaining the structure in the data we have k=13, and logistic k=16, whereas Admixture indicated k=5. We can plot k=5 to see how it compares to the Admixture, LEA, and neuro-admixture.
+
+#### 2.3.8 pong
+
+We first need to find the most common mode among runs. We do not need to plot all matrices, we can plot the first 12 using pong.
+
+Download the data
+```{bash, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster
+rsync -chavzP --stats --include='*/' --include='*.meanQ' --exclude='*' lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/faststructure/r2_0.1* /Users/lucianocosme/Library/CloudStorage/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/populations/faststructure/
+```
+
+
+##### 2.3.8.1 simple prior
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/faststructure/r2_0.1/run*/simple* | tail
+```
+
+Create filemap2.txt
+```{bash, eval=FALSE}
+# we will use the 10 runs to make the plot. 
+# loop to generate filemap2.txt with k values from 2 to 12. I use tab instead of space. We need that for pong.
+for k in $(seq 2 12); do
+    for run in $(seq 1 10); do
+        echo "k$k""r$run $k faststructure/r2_0.1/run$run/simple.$k.meanQ" | tr ' ' '\t'
+    done
+done > output/populations/filemap2.txt;
+head -n 5 output/populations/filemap2.txt
+```
+
+
+```{bash, eval=FALSE}
+wc -l output/populations/filemap2.txt
+```
+
+Create ind2pop
+```{bash, eval=FALSE}
+rm output/populations/ind2pop.txt;
+cat output/populations/snps_sets/r2_0.1.fam | awk '{print $1}' > output/populations/ind2pop.txt;
+head -n 5 output/populations/ind2pop.txt
+```
+
+Run on the terminal and not on RStudio.
+```{bash, eval=FALSE}
+# on your computer to visualize the results
+pong \
+--filemap output/populations/filemap2.txt \
+--ind2pop output/populations/ind2pop.txt  \
+--dist_metric jaccard \
+--sim_threshold 0.82 \
+--greedy \
+--force \
+--output_dir output/populations/sim_threshold_0.82 \
+--verbose
+```
+1 mode for k=5, so any run works.
+
+
+###### 2.3.8.1.1 Create plot simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.1", "run1", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#FF00FF",
+    "v4" = "#FF0000",
+    "v5" = "#00FF00"
+  )
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure simple prior for k1:30 with 57,780 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_simple_r2_0.1_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+##### 2.3.8.1 logistic prior
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/faststructure/r2_0.1/run*/logistic* | tail
+```
+ We do not need to use pong because we have only 1 run for the logistic.
+
+###### 2.3.8.1.1 Create plot simple prior with Q matrix identified with pong
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "r2_0.1", "run1", "logistic.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Merge columns "FamilyID" and "IndividualID" with an underscore
+# fam_data$ind <- paste(fam_data$FamilyID, fam_data$IndividualID, sep = "_")
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "local_adaptation", "sampling_loc.rds"))
+head(sampling_loc)
+```
+
+```{r, fig.width=9, fig.height=6}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Create a named vector to map countries to regions
+country_to_region <- c(
+  "Bhutan" = "South Asia",
+  "Cambodia" = "Southeast Asia",
+  "China" = "East Asia",
+  "India" = "South Asia",
+  "Indonesia" = "Southeast Asia",
+  "Japan" = "East Asia",
+  "Malaysia" = "Southeast Asia",
+  "Maldives" = "South Asia",
+  "Nepal" = "South Asia",
+  "Sri Lanka" = "South Asia",
+  "Taiwan" = "East Asia",
+  "Thailand" = "Southeast Asia",
+  "Vietnam" = "Southeast Asia"
+)
+
+# Add the region to the data frame
+sampling_loc$Region2 <- country_to_region[sampling_loc$Country]
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(sampling_loc, by = c("pop" = "Abbreviation"))
+
+# Create a combined variable for Region and Country
+Q_joined <- Q_joined |>
+  mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(Region, Region2, Country, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(Region_Country) |>
+  mutate(label = ifelse(row_number() == 1, as.character(Country), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(Region_Country = unique(Q_ordered$Region_Country))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$Region_Country, function(rc)
+    max(which(Q_ordered$Region_Country == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, Pop_City, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, Pop_City, Country, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(Country) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <-
+  c(
+    "v1" = "#FFFF00",
+    "v2" = "#0000FF",
+    "v3" = "#00FF00",
+    "v4" = "#FF0000",
+    "v5" = "#FF00FF"
+  )
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n fastStructure logistic prior for k1:30 with 57,780 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# # save it
+ggsave(
+  here("output", "populations", "figures", "faststructure_logistic_r2_0.1_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

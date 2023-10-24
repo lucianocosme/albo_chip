@@ -1,0 +1,354 @@
+---
+title: "Aedes albopictus SNP chip - Maps with sampling sites."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+Libraries
+```{r, message=FALSE, results='hide', warning=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(here)
+library(dplyr)
+library(colorout)
+library(extrafont)
+library(scales)
+library(stringr)
+library(ggtext)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+library(gstudio)
+library(ggmap)
+```
+
+## 1. All samples
+
+Clear memory and environment
+```{r}
+# Clear entire environment
+rm(list = ls())
+# Forcefully trigger garbage collection
+gc()
+```
+
+
+```{r, eval=FALSE}
+# Enter your key here
+register_google(key = "PUT_YOUR_KEY_HERE", write = F)
+```
+
+Load the data
+```{r}
+chip <- readRDS(here("output","maps","sampling_loc.rds"))
+                 
+wgs<-read.table(here("output","maps","wgs.txt"), header = T, sep = "\t")
+```
+
+Check wgs
+```{r}
+head(wgs)
+```
+
+Get coordinates
+```{r, eval=FALSE}
+loc<-geocode(wgs$City)
+loc2<-as.data.frame(loc)
+wgs2<- cbind(wgs,loc2)
+```
+
+
+```{r, eval=FALSE}
+# Rename
+wgs2 <- wgs2 |>
+  dplyr::rename(
+    Longitude = lon, 
+    Latitude = lat,
+    Abbreviation = label
+    ) |>
+  dplyr::select(
+    Abbreviation, Longitude, Latitude
+  ) |>
+  mutate(tech = "WGS")
+
+
+head(wgs2)
+```
+
+```{r, eval=FALSE}
+saveRDS(wgs2, here("output", "maps", "wgs.rds"))
+```
+
+```{r}
+wgs2 <- readRDS(here("output", "maps", "wgs.rds"))
+head(wgs2)
+```
+
+Check chip
+```{r}
+head(chip)
+```
+
+
+We have some extra localities. Let's get the populations we have from a fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "r2_0.1.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+
+fam_data <- fam_data |>
+  distinct(FamilyID, .keep_all = TRUE)
+# View the first few rows
+head(fam_data)
+```
+
+Now merge with our chip data
+```{r}
+# Join with sampling_loc to get sampling localities
+chip2 <- chip |>
+  inner_join(fam_data, by = c("Abbreviation" = "FamilyID"))
+
+chip2 <- chip2 |>
+  distinct(Abbreviation, .keep_all = TRUE) |>
+  dplyr::select(
+    Abbreviation, Longitude, Latitude
+  )
+
+chip2 <- chip2 |>
+  dplyr::select(
+    Abbreviation, Longitude, Latitude
+  ) |>
+  mutate(tech = "CHIP")
+
+head(chip2)
+```
+
+
+Bind objects
+```{r}
+data <- rbind(wgs2, chip2)
+
+# Remove the "w"
+data$Abbreviation <- gsub("w$", "", data$Abbreviation)
+
+head(data)
+```
+
+
+```{r, fig.height=5, fig.width=8}
+# Identify localities with both "CHIP" and "WGS".
+both_techs_localities <- data |>
+  group_by(Abbreviation) |>
+  summarise(both = n_distinct(tech) > 1) |>
+  filter(both) |>
+  pull(Abbreviation)
+
+# Add a new column to your data
+data$both_techs <- ifelse(data$Abbreviation %in% both_techs_localities, "Both", as.character(data$tech))
+
+
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# Plot
+ggplot() +
+  geom_sf(data = world, fill = "#e2f5eb", color = "gray") +
+  geom_point(
+    data = data,
+    aes(x = Longitude, y = Latitude, color = both_techs),
+    size = 0.3,
+    show.legend = FALSE
+  ) +
+  geom_text_repel(
+    data = data,
+    aes(
+      x = Longitude, 
+      y = Latitude, 
+      label = Abbreviation,
+      color = both_techs  # Use the both_techs column directly for label colors
+    ),
+    size = 2,
+    box.padding = unit(0.01, "lines"),
+    max.overlaps = 50,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = c("Both" = "blue", "CHIP" = "red", "WGS" = "black")) +
+  labs(color = "Genotyped with:") +
+  coord_sf(xlim = c(-130, 180), ylim = c(-60, 80)) +
+  my_theme() +
+  theme(legend.position = "top",
+        axis.text.y = element_text(margin = margin(
+          t = 0,
+          r = 10,
+          b = 0,
+          l = 0
+        )))
+
+
+ggsave(
+  here("output", "maps", "samples.pdf"),
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+Zoom
+```{r}
+# Plot
+ggplot() +
+  geom_sf(data = world, fill = "#e2f5eb", color = "gray") +
+  geom_point(
+    data = data,
+    aes(x = Longitude, y = Latitude, color = both_techs),
+    size = 0.3,
+    show.legend = FALSE
+  ) +
+  geom_text_repel(
+    data = data,
+    aes(
+      x = Longitude, 
+      y = Latitude, 
+      label = Abbreviation,
+      color = both_techs  # Use the both_techs column directly for label colors
+    ),
+    size = 2,
+    box.padding = unit(0.01, "lines"),
+    max.overlaps = 50,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(values = c("Both" = "blue", "CHIP" = "red", "WGS" = "black")) +
+  labs(color = "Genotyped with:") +
+  coord_sf(xlim = c(60, 160), ylim = c(-10, 60)) +
+  my_theme() +
+  theme(legend.position = "top",
+        axis.text.y = element_text(margin = margin(
+          t = 0,
+          r = 10,
+          b = 0,
+          l = 0
+        )))
+
+
+ggsave(
+  here("output", "maps", "samples_zoom.pdf"),
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+```{r}
+library(ggplot2)
+library(sf)
+
+# Filter countries for each region
+east_asia_countries <- c("China", "Mongolia", "South Korea", "North Korea", "Japan", "Taiwan")
+south_asia_countries <- c("India", "Pakistan", "Bangladesh", "Nepal", "Bhutan", "Sri Lanka", "Maldives")
+southeast_asia_countries <- c("Myanmar", "Thailand", "Cambodia", "Laos", "Vietnam", "Malaysia", "Singapore", "Indonesia", "Brunei", "Philippines", "East Timor")
+
+east_asia <- world[world$name %in% east_asia_countries, ]
+south_asia <- world[world$name %in% south_asia_countries, ]
+southeast_asia <- world[world$name %in% southeast_asia_countries, ]
+
+# Your ggplot code
+ggplot() +
+  geom_sf(data = world,
+          fill = "#e2f5eb",
+          color = "gray") +
+  geom_sf(data = east_asia, aes(fill = "East Asia")) +
+  geom_sf(data = south_asia, aes(fill = "South Asia")) +
+  geom_sf(data = southeast_asia, aes(fill = "Southeast Asia")) +
+  geom_point(
+    data = data,
+    aes(x = Longitude, y = Latitude, color = both_techs),
+    size = 0.3,
+    show.legend = FALSE
+  ) +
+  geom_text_repel(
+    data = data,
+    aes(
+      x = Longitude,
+      y = Latitude,
+      label = Abbreviation,
+      color = both_techs
+    ),
+    size = 2,
+    box.padding = unit(0.01, "lines"),
+    max.overlaps = 50,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = c(
+    "East Asia" = "#faaea1",
+    "South Asia" = "#95f5a8",
+    "Southeast Asia" = "#b2c7ff"
+  )) +
+  scale_color_manual(values = c(
+    "Both" = "blue",
+    "CHIP" = "red",
+    "WGS" = "black"
+  )) +
+  labs(fill = "Regions", color = "Genotyped with:") +
+  coord_sf(xlim = c(60, 160), ylim = c(-10, 60)) +
+  my_theme() +
+  theme(legend.position = "top",
+        axis.text.y = element_text(margin = margin(
+          t = 0,
+          r = 10,
+          b = 0,
+          l = 0
+        )))
+
+# Save your ggplot
+ggsave(
+  here("output", "maps", "samples_zoom.pdf"),
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+
+

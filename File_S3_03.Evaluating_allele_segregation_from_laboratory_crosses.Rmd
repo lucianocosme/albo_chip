@@ -1,0 +1,4034 @@
+---
+title: "Aedes albopictus SNP chip - Analyse of allele segregation from laboratory crosses."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+# Validation of the *Aedes albopictus* chip using laboratory crosses
+
+To validate the *Aedes albopictus* chip we conducted six crosses between native and invasive laboratory colonies.
+
+# Analytic approach
+
+1.  Exported the recommended SNPs from the Axiom suite.
+2.  Utilized R and Python to identify the segregating SNPs, i.e., those that are heterozygous in one parent.
+3.  Performed comparison of only those SNPs where one parent was heterozygous. Besides, I estimated the power of a chi
+    square test for each SNP.
+4.  Identified the SNPs shared or unique across the three families.
+5.  Estimated the frequency of the segregating SNPs in the offspring.
+6.  Based on the missingness in the offspring, I estimated the expected allele counts considering the genotypes of the
+    parents.
+7.  Compared the expected and observed count of each of the two alleles.
+8.  Performed a chi-square test to examine the relationship between the observed and expected allele counts.
+9.  Excluded SNPs that had observed counts less than 5 to ensure statistical validity of the chi-square test.
+10. If the SNP was present in more than one family, applied Fisher's test to combine the p-values to gain an overall
+    significance level.
+11. If the SNP was present only in one family, utilized the single available p-value for statistical inference.
+12. Performed Bonferroni correction to adjust the significance levels for multiple testing to control the family-wise
+    error rate.
+
+## 1. Load libraries
+
+```{r load_libraries, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(colorout)
+library(flextable)
+library(ggplot2)
+library(scales)
+library(reticulate)
+library(extrafont)
+library(stringr)
+library(officer)
+library(ggrepel)
+library(readr)
+library(pwr)
+library(stats)
+library(vcfR)
+library(ggvenn)
+library(RColorBrewer)
+library(VariantAnnotation)
+library(data.table)
+library(doParallel)
+library(dplyr)
+library(gridExtra)
+library(Cairo)
+library(venn)
+library(writexl)
+```
+
+## 2. Import the data
+
+Check how many samples
+```{bash check_n_samples_in_vcf_file}
+# make sure you have all the .CEL samples in your family file - 152
+bcftools query -l output/segregation/crosses_new_priors.vcf | wc -l
+```
+
+Check sample names
+```{bash check_sample_names_in_vcf_file}
+# make sure you have all the .CEL samples in your family file - 152
+bcftools query -l output/segregation/crosses_new_priors.vcf | head
+```
+
+
+### 2.1 Use Plink2 to convert to bed format
+
+```{bash plink2_convert_vcf_to_bed1}
+# If you run this chunk you will have to open the file.fam in a text editor and set parents id and sex of each individual. I fix it using bash tools. You can start on the next chunk if you do not want to have to repeat what I did.
+# we also check if the reference genome and the reference alleles match.
+plink2 \
+--allow-extra-chr \
+--vcf output/segregation/crosses_new_priors.vcf \
+--const-fid \
+--make-bed \
+--fa data/genome/albo.fasta.gz \
+--ref-from-fa 'force' `# sets REF alleles when it can be done unambiguously, we use force to change the alleles` \
+--out output/segregation/albopictus/file1 \
+--silent;
+# --keep-allele-order \ if you use Plink 1.9
+grep "variants" output/segregation/albopictus/file1.log # to get the number of variants from the log file.
+```
+
+
+Check the headings of the the files we will work on.
+
+```{bash check_headings1, cache=TRUE}
+head -n 5 output/segregation/albopictus/file1.fam
+```
+We need to update the family information, individual id, and sex of each individual. We can use the same file we use with the Axiom Suite to update our .fam file. 
+
+```{bash, cache=TRUE}
+head -n 5 data/crosses/crosses_meta_data.txt
+```
+
+
+### 2.1.1 Use R to update the .fam file
+
+Import the fam file we use with Axiom Suite
+```{r import_fam_file_Axiom, cache=TRUE}
+# the order of the rows in this file does not matter
+samples <-
+  read.delim(
+    file   = here(
+      "data", "crosses", "crosses_meta_data.txt"
+    ),
+    header = TRUE
+  )
+head(samples)
+```
+
+Import .fam file we created once we created the bed file using Plink2
+```{r import_fam}
+# we will keep the order of the rows in this file
+fam1 <-
+  read.delim(
+    file   = here(
+      "output", "segregation", "albopictus", "file1.fam"
+    ),
+    header = FALSE,
+    
+  )
+head(fam1)
+```
+
+We can merge the tibbles.
+```{r merge_objects1}
+# to keep the same order of the .fam file, we will first create an index based on the numbers of the samples, then use it too keep the order
+
+# Extract the number part from the columns
+fam1_temp <- fam1 |>
+  mutate(num_id = as.numeric(str_extract(V2, "^\\d+")))
+
+samples_temp <- samples |>
+  mutate(num_id = as.numeric(str_extract(Sample.Filename, "^\\d+")))
+
+# Perform the left join using the num_id columns and keep the order of fam1
+df <- fam1_temp |>
+  dplyr::left_join(samples_temp, by = "num_id") |>
+  dplyr::select(-num_id) |>
+  dplyr::select(8:13)
+
+# check the data frame
+head(df)
+```
+
+We can check how many samples we have in our file
+```{r check_number_samples_df}
+nrow(df)
+```
+
+Before you save the new fam file, you can change the original file to a different name, to compare the order later. If you want to repeat the steps above after you saving the new file1.fam, you will need to import the vcf again.
+
+```{r save_new_fam_file}
+#   ____________________________________________________________________________
+#   save calculation to load later                                          ####
+write.table(
+  df,
+  file      = here(
+    "output", "segregation", "albopictus", "file1.fam"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Check the new .fam file to see if has the order and the sample attributes we want.
+
+```{bash, cache=TRUE}
+# you can open the file on a text editor and double check the sample order and information.
+head -n 5 output/segregation/albopictus/file1.fam
+```
+
+## 2. Check Mendel test with Plink
+
+The command below set genotype missingness threshold to 20%, and removed variants with any error in any trio (--me 0 0
+var-first) or arbitrary set allowed error rate (--me 0.1 0.02 var-first or --me 0.1 0.05 var-first)
+
+```{bash mendel_test_full_data_set, cache=TRUE}
+plink \
+--allow-extra-chr \
+--bfile output/segregation/albopictus/file1 \
+--mendel \
+--me 0.1 0.02 var-first \
+--me-exclude-one \
+--out output/segregation/albopictus/file2 \
+--make-bed \
+--geno 0.2 \
+--keep-allele-order \
+--write-snplist \
+--silent;
+head -n 100 output/segregation/albopictus/file2.log
+```
+
+## 3. Find segregating SNPs
+
+The PLINK --freqx command generates a .frqx file which contains allele frequencies for each SNP for each specific
+family.
+
+### 3.1 Create bed files for each set of parents and offspring 
+
+We can subset our bed file to keep founders (parents) or non-founders (offspring). We will create vcf files for each data set.
+
+#### 3.1.1 Parents
+
+```{bash keep_parents}
+# Define the list of family names
+families=("fam1" "fam2" "fam3" "fam4" "fam5" "fam6")
+
+# Iterate over each family
+for fam_name in "${families[@]}"
+do
+    # Run Plink command for each family
+    plink \
+    --allow-extra-chr \
+    --keep-fam <(echo "$fam_name") \
+    --bfile output/segregation/albopictus/file1 \
+    --out "output/segregation/albopictus/parents_family_$fam_name" \
+    --recode vcf \
+    --geno 0 \
+    --keep-allele-order \
+    --silent \
+    --make-bed \
+    --filter-founders
+done
+
+```
+
+#### 3.1.1 Offspring
+
+```{bash keep_offspring}
+# Define the list of family IDs
+families=("fam1" "fam2" "fam3" "fam4" "fam5" "fam6")
+
+# Iterate over each family
+for fam_id in "${families[@]}"
+do
+    # Run Plink command for each family
+    plink \
+    --allow-extra-chr \
+    --keep-fam <(echo -e "$fam_id") \
+    --bfile output/segregation/albopictus/file1 \
+    --out output/segregation/albopictus/offspring_family_${fam_id} \
+    --recode vcf \
+    --keep-allele-order \
+    --silent \
+    --make-bed \
+    --filter-nonfounders
+done
+```
+
+### 3.2 Find the segregating SNPs using python
+
+We can use vcf files that we created to find the SNPs that are heterozygous in one parent.
+
+```{python segregating_SNPs_python, eval=FALSE}
+import os
+import pysam
+import sys
+import contextlib
+
+# Define a context manager to suppress stdout and stderr
+@contextlib.contextmanager
+def suppress_stdout_stderr():
+    with open(os.devnull, 'w') as null_file:
+        with contextlib.redirect_stdout(null_file), contextlib.redirect_stderr(null_file):
+            yield
+
+# Redirect standard output to the null device
+sys.stdout = open(os.devnull, 'w')
+
+vcf_files = [
+    "output/segregation/albopictus/parents_family_fam1.vcf",
+    "output/segregation/albopictus/parents_family_fam2.vcf",
+    "output/segregation/albopictus/parents_family_fam3.vcf",
+    "output/segregation/albopictus/parents_family_fam4.vcf",
+    "output/segregation/albopictus/parents_family_fam5.vcf",
+    "output/segregation/albopictus/parents_family_fam6.vcf"
+]
+
+for vcf_file in vcf_files:
+    # Open the VCF file
+    vcf = pysam.VariantFile(vcf_file, "r")
+
+    # Set output file name
+    output_file_name = vcf_file.replace(".vcf", "_segregating_SNPs_python.txt")
+
+    # Open output file
+    with open(output_file_name, "w") as output_file:
+        # Iterate over each record
+        for rec in vcf.fetch():
+            # For each SNP
+            if len(rec.alleles) == 2:  # Check if it's biallelic
+                sample_1_gt = rec.samples.values()[0]['GT']  # Individual 1 genotype
+                sample_2_gt = rec.samples.values()[1]['GT']  # Individual 2 genotype
+                
+                # Check that they are not homozygous for the same allele
+                if not ((sample_1_gt == (0, 0) and sample_2_gt == (0, 0)) or (sample_1_gt == (1, 1) and sample_2_gt == (1, 1))):
+                    output_file.write(f"{rec.id}\n")
+
+# Restore standard output
+sys.stdout = sys.__stdout__
+```
+
+### 3.3 Find the segregating SNPs using R
+
+```{r segregating_SNPs_R}
+# it is slower
+vcf_files <- c(
+    "output/segregation/albopictus/parents_family_fam1.vcf",
+    "output/segregation/albopictus/parents_family_fam2.vcf",
+    "output/segregation/albopictus/parents_family_fam3.vcf",
+    "output/segregation/albopictus/parents_family_fam4.vcf",
+    "output/segregation/albopictus/parents_family_fam5.vcf",
+    "output/segregation/albopictus/parents_family_fam6.vcf"
+)
+
+for (vcf_file in vcf_files) {
+  # Read the VCF file
+  vcf <- readVcf(vcf_file)
+  
+  # Extract genotypes
+  genotypes <- geno(vcf)$GT
+  
+  # Initialize the result vector
+  result <- c()
+  
+  # Iterate over each record
+  for (i in seq_len(nrow(genotypes))) {
+    sample_1_gt <- genotypes[i, 1]
+    sample_2_gt <- genotypes[i, 2]
+    
+    # Check that they are not homozygous for the same allele
+    if (!(sample_1_gt == "0/0" &&
+          sample_2_gt == "0/0") &&
+        !(sample_1_gt == "1/1" && sample_2_gt == "1/1")) {
+      result <- c(result, row.names(genotypes)[i])
+    }
+  }
+  
+  # Set output file name
+  output_file_name <-
+    gsub(".vcf", "_segregating_SNPs_R.txt", vcf_file)
+  
+  # Write the result to a file
+  write.table(
+    result,
+    output_file_name,
+    row.names = FALSE,
+    col.names = FALSE,
+    quote = FALSE
+  )
+}
+```
+
+Our goal: SNP can to be heterozygous in one sample if it is homozygous in the other sample 
+SNP cannot be homozygous for the same allele in both samples (sample 1 = 0/0 and sample 2 = 0/0 or sample 1 = 1/1 and sample 2 = 2/2) 
+SNP can be homozygous in both samples but for different allele (sample 1 = 1/1 and sample 2 = 0/0 or vice versa)
+
+Clean memory and environment
+
+```{r clean_python_env03}
+# python
+py_run_string("import gc; gc.collect()")
+
+# R
+rm(list = ls())
+
+# Clean up memory
+gc()
+```
+
+### 3.4 Sanity check: count segregating SNPs for parents in each family
+
+```{bash}
+#ls output/segregation/albopictus/parents_family_*_segregating_SNPs_*.txt
+
+files=(
+  output/segregation/albopictus/parents_family_*_segregating_SNPs_R.txt
+  output/segregation/albopictus/parents_family_*_segregating_SNPs_python.txt
+)
+
+echo "family code SNPs"
+for file in "${files[@]}"; do
+  line=$(wc -l "$file")
+  snps=$(echo "$line" | awk '{print $1}')
+  family=$(basename "$file" | cut -d "_" -f 3)
+  code=$(basename "$file" | cut -d "_" -f 6 | cut -d "." -f 1)
+  echo "$family $code $snps"
+done
+```
+
+We can write the data to file and use flextable to make a table
+```{bash}
+files=(
+  output/segregation/albopictus/parents_family_*_segregating_SNPs_R.txt
+  output/segregation/albopictus/parents_family_*_segregating_SNPs_python.txt
+)
+
+echo "family,code,SNPs" > output/segregation/albopictus/per_family_segregating_SNPS.csv
+for file in "${files[@]}"; do
+  line=$(wc -l "$file")
+  snps=$(echo "$line" | awk '{print $1}')
+  family=$(basename "$file" | cut -d "_" -f 3)
+  code=$(basename "$file" | cut -d "_" -f 6 | cut -d "." -f 1)
+  echo "$family,$code,$snps" >> output/segregation/albopictus/per_family_segregating_SNPS.csv
+done
+```
+
+Import the data
+```{r}
+# Read the data
+fam_SNPs_segragating <-
+  read_csv(
+  here(
+  "output", "segregation", "albopictus", "per_family_segregating_SNPS.csv"
+  ), 
+  show_col_types = FALSE
+)
+
+# Create the flextable
+ft <- 
+  flextable(fam_SNPs_segragating)
+
+# Print the table
+ft
+
+# save the table
+# Initialize Word document
+doc <- 
+  read_docx() |>
+  body_add_flextable(value = ft)
+
+# Define the output path with 'here' library
+output_path <- here(
+  "output",
+  "segregation", 
+  "albopictus", 
+  "per_family_segregating_SNPS.docx"
+  )
+
+# Save the Word document
+print(doc, target = output_path)
+```
+
+The code worked as we expected.
+
+### 3.5 Create Venn diagram for one family
+
+Now compare the files for one family and see if they match
+
+```{r venn_diagram, message=FALSE}
+# Read in the two files as vectors
+family_fam1_segregating_SNPs_python <-
+  read_table(
+    "output/segregation/albopictus/parents_family_fam1_segregating_SNPs_python.txt",
+    col_names = FALSE
+  )[[1]]
+
+family_fam1_segregating_SNPs_R <-
+  read_table(
+    "output/segregation/albopictus/parents_family_fam1_segregating_SNPs_R.txt",
+    col_names = FALSE
+  )[[1]]
+
+# Calculate shared values
+family_fam1_segregating_SNPs <-
+  intersect(
+    family_fam1_segregating_SNPs_python,
+    family_fam1_segregating_SNPs_R
+  )
+
+
+# Create Venn diagram
+venn_data <-
+  list(
+    "python" = family_fam1_segregating_SNPs_python,
+    "R" = family_fam1_segregating_SNPs_R
+  )
+venn_plot <-
+  ggvenn(
+    venn_data,
+    fill_color = c("steelblue", "darkorange"),
+    show_percentage = TRUE
+  )
+
+# Add a title
+venn_plot <-
+  venn_plot +
+  ggtitle("SNPs fam1") +
+  theme(plot.title = element_text(hjust = .5))
+
+# Display the Venn diagram
+print(venn_plot)
+
+# Save Venn diagram to PDF
+output_path <-
+  here(
+    "output",
+    "segregation",
+    "albopictus",
+    "segregating_SNPs_parents_family_fam1.pdf"
+  )
+ggsave(
+  output_path,
+  venn_plot,
+  height = 5,
+  width = 5,
+  dpi = 300
+)
+```
+
+### 3.6 Create Venn diagram for all families
+
+We can create a plot for all families
+```{r, message=FALSE, fig.width=9, fig.height=8}
+# Initialize a list to store the plots
+plots <- list()
+
+# List all families
+families <- c("fam1", "fam2", "fam3", "fam4", "fam5", "fam6")
+
+# Loop through each family
+for (fam in families) {
+  # Read in the two files as vectors
+  family_segregating_SNPs_python <-
+    read_table(
+      paste0(
+        "output/segregation/albopictus/parents_family_",
+        fam,
+        "_segregating_SNPs_python.txt"
+      ),
+      col_names = FALSE
+    )[[1]]
+  family_segregating_SNPs_R <-
+    read_table(
+      paste0(
+        "output/segregation/albopictus/parents_family_",
+        fam,
+        "_segregating_SNPs_R.txt"
+      ),
+      col_names = FALSE
+    )[[1]]
+  
+  # Calculate shared values
+  family_segregating_SNPs <-
+    intersect(family_segregating_SNPs_python, family_segregating_SNPs_R)
+  
+  # Create Venn diagram
+  venn_data <-
+    list("python" = family_segregating_SNPs_python, "R" = family_segregating_SNPs_R)
+  venn_plot <-
+    ggvenn(
+      venn_data,
+      fill_color = c("steelblue", "pink"),
+      show_percentage = TRUE
+    )
+  
+  # Add a title
+  venn_plot <-
+    venn_plot + ggtitle(paste0("SNPs ", fam)) + theme(plot.title = element_text(hjust = .5, vjust = 1.5, margin = margin(b = 5)))
+  
+  # Add the plot to the list
+  plots[[fam]] <- venn_plot
+}
+
+# Combine the plots
+combined_plot <- grid.arrange(grobs = plots,
+                              ncol = 3,
+                              layout_matrix = rbind(c(1, 2, 3),
+                                                    c(4, 5, 6)))
+
+# Save combined Venn diagram to PDF
+output_path <-
+  here(
+    "output",
+    "segregation",
+    "albopictus",
+    "segregating_SNPs_parents_all_families.pdf"
+  )
+ggsave(
+  output_path,
+  combined_plot,
+  height = 15,
+  width = 15,
+  dpi = 300
+)
+
+```
+
+### 3.7 Create six way Venn diagram for all families with the segregating SNPs
+
+```{r, message=FALSE, warning=FALSE}
+# List all families
+families <- c("fam1", "fam2", "fam3", "fam4", "fam5", "fam6")
+
+# Initialize a list to store the data
+data_list <- list()
+
+# Loop through each family
+for (fam in families) {
+  # Read in the file as a vector
+  family_segregating_SNPs_R <-
+    read_table(
+      paste0(
+        "output/segregation/albopictus/parents_family_",
+        fam,
+        "_segregating_SNPs_R.txt"
+      ),
+      col_names = FALSE
+    )[[1]]
+  
+  # Add the data to the list
+  data_list[[fam]] <- family_segregating_SNPs_R
+}
+
+# Define a vector of color-blind friendly colors
+colors <-
+  c("#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#F0E442",
+    "#000000",
+    "#CC79A7")
+
+# Save combined Venn diagram to PDF
+output_path <-
+  here("output",
+       "segregation",
+       "albopictus",
+       "segregating_SNPs_parents_6_venn.pdf")
+
+# Create a PDF device
+pdf(output_path, width = 5, height = 5)
+par(mar = c(5, 5, 7, 2) + 0.1)  # Adjust margins (bottom, left, top, right)
+
+# Create the 6-way Venn diagram with filled sets
+venn(data_list,
+     zcolor = colors,
+     opacity = 0.4,
+     box = FALSE,
+     ellipse = FALSE,
+     lty = "blank")
+
+# Adjust the title position and size
+title(
+  main = "6-way Venn Diagram of Segregating SNPs",
+      line = -1,
+      cex.main = 0.8
+  )
+
+# Close the PDF device
+dev.off()
+
+# show the plot here
+venn(data_list,
+     zcolor = colors,
+     opacity = 0.4,
+     box = FALSE,
+     ellipse = FALSE,
+     lty = "blank")
+```
+
+No, it is not what you are thinking. We do not have only 5,249 SNPs shared across all six families. Remember, we compared the genotypes of the parents. We have six pairs of mosquitoes. We selected SNPs that were heterozygous in one of the parents. If a SNP was homozygous in both parents, we did not seletct it for testing within each family. If one of the parents had a missing genotype call for a loci, we did not include this loci as well. So, what we see is that we have around 5,249 SNPs that are heterozygous in the male or females across all six families. Most of the SNPs do not follow this pattern, probably due to runs of homozygosity.
+
+Create segregation table
+```{r parental_SNPs}
+# List all families
+families <- c("fam1", "fam2", "fam3", "fam4", "fam5", "fam6")
+
+# Initialize a list to store the data
+data_list <- list()
+
+# Loop through each family
+for (fam in families) {
+  # Read in the file as a vector
+  family_segregating_SNPs_R <-
+    read.table(
+      paste0(
+        "output/segregation/albopictus/parents_family_",
+        fam,
+        "_segregating_SNPs_R.txt"
+      ),
+      colClasses = "character",
+      col.names = FALSE
+    )[[1]]
+  
+  # Add the data to the list
+  data_list[[fam]] <- family_segregating_SNPs_R
+}
+
+# Calculate the pairwise comparisons
+pairwise_comp <- matrix(0, nrow = length(families), ncol = length(families))
+colnames(pairwise_comp) <- families
+rownames(pairwise_comp) <- families
+
+for (i in 1:(length(families) - 1)) {
+  for (j in (i + 1):length(families)) {
+    shared <- length(intersect(data_list[[families[i]]], data_list[[families[j]]]))
+    pairwise_comp[i, j] <- shared
+    pairwise_comp[j, i] <- shared
+  }
+}
+
+# Calculate the total shared and total unique for each family
+total_shared <- length(Reduce(intersect, data_list))
+total_unique <- sapply(data_list, function(x) length(x) - sum(x %in% unlist(data_list[-which(names(data_list) == names(x))])))
+
+# Create a data frame with the updated columns
+table_data <- data.frame(Family = families,
+                         t(pairwise_comp),
+                         Total_Shared = total_shared,
+                         Total_Unique = total_unique)
+
+# Create a flextable object
+ft <- flextable(table_data)
+
+# Print the table
+print(ft)
+
+
+# save the table
+# Initialize Word document
+doc <-
+  read_docx() |>
+  body_add_flextable(value = ft)
+
+# Define the output path with 'here' library
+output_path <- here(
+  "output",
+  "segregation",
+  "albopictus",
+  "albopictus_segregating_SNPS.docx"
+  )
+
+# Save the Word document
+print(doc, target = output_path)
+```
+
+
+
+## 4. Calculate the expected and observed allele frequencies or counts
+
+Plink has several utilities that we can use to find the expected and observed counts. I will go over some of them.
+
+### 4.1 Estimate frequencies of parents
+
+```{bash plink_output_allele_count_parents}
+# Define the list of family names
+families=("fam1" "fam2" "fam3" "fam4" "fam5" "fam6")
+
+# Iterate over each family
+for fam_id in "${families[@]}"
+do
+    # Run Plink command with --freq flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/parents_family_${fam_id} \
+    --out output/segregation/albopictus/parents_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freq \
+    --silent 
+
+    # Run Plink command with --freqx flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/parents_family_${fam_id} \
+    --out output/segregation/albopictus/parents_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freqx \
+    --silent
+    
+    # Run Plink command with --freq counts flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/parents_family_${fam_id} \
+    --out output/segregation/albopictus/parents_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freq counts \
+    --silent 
+done
+```
+
+### 4.2 Check the allele count of one family
+
+From Plink documentation:
+
+```{.codeBlockCustom}        
+.frqx (genotype count report)
+
+Produced by --freqx. Valid input for --read-freq.
+
+A text file with a header line, and then one line per variant with the following ten fields:
+
+CHR Chromosome code
+SNP Variant identifier
+A1  Allele 1 (usually minor)
+A2  Allele 2 (usually major)
+C(HOM A1)   A1 homozygote count
+C(HET)  Heterozygote count
+C(HOM A2)   A2 homozygote count
+C(HAP A1)   Haploid A1 count (includes male X chromosome)
+C(HAP A2)   Haploid A2 count
+C(MISSING)  Missing genotype count
+```
+
+```{bash}
+head output/segregation/albopictus/parents_freq_family_fam1.frqx
+```
+
+### 4.3 Check the minor allele count of one family
+
+From Plink documentation:
+
+```{.codeBlockCustom}    
+.frq (basic allele frequency report)
+Produced by --freq. Valid input for --read-freq.
+
+A text file with a header line, and then one line per variant with the following six fields:
+
+CHR Chromosome code
+SNP Variant identifier
+A1  Allele 1 (usually minor)
+A2  Allele 2 (usually major)
+MAF Allele 1 frequency
+NCHROBS Number of allele observations
+```
+
+```{bash}
+head output/segregation/albopictus/parents_freq_family_fam1.frq
+```
+
+### 4.4 Check the counts of each allele
+
+From Plink documentation:
+
+```{.codeBlockCustom}         
+.frq.count (basic allele count report)
+Produced by "--freq counts". Valid input for --read-freq.
+
+A text file with a header line, and then one line per variant with the following seven fields:
+
+CHR Chromosome code
+SNP Variant identifier
+A1  Allele 1 (usually minor)
+A2  Allele 2 (usually major)
+C1  Allele 1 count
+C2  Allele 2 count
+G0  Missing genotype count (so C1 + C2 + 2 * G0 is constant on autosomal variants)
+```
+
+```{bash}
+head output/segregation/albopictus/parents_freq_family_fam1.frq.counts
+```
+
+### 4.5 Estimate frequencies for offspring
+
+We can use the flag --freq counts to get the counts for each allele for all SNPs. It will also create the "NCHROBS" or "Number of allele observations". Then we can use the "NCHROBS" value for each SNP, to calculate the expected counts for each parental allele.
+
+```{bash plink_output_allele_count_offspring}
+# Define the list of family IDs
+families=("fam1" "fam2" "fam3" "fam4" "fam5" "fam6")
+
+# Iterate over each family
+for fam_id in "${families[@]}"
+do
+    # Run Plink command with --freq flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/offspring_family_${fam_id} \
+    --out output/segregation/albopictus/offspring_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freq \
+    --nonfounders \
+    --silent 
+
+    # Run Plink command with --freqx flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/offspring_family_${fam_id} \
+    --out output/segregation/albopictus/offspring_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freqx \
+    --nonfounders \
+    --silent
+    
+    # Run Plink command with --freq counts flag
+    plink \
+    --allow-extra-chr \
+    --bfile output/segregation/albopictus/offspring_family_${fam_id} \
+    --out output/segregation/albopictus/offspring_freq_family_${fam_id} \
+    --keep-allele-order \
+    --extract output/segregation/albopictus/parents_family_${fam_id}_segregating_SNPs_python.txt \
+    --freq counts \
+    --nonfounders \
+    --silent
+done
+```
+
+Check results
+
+```{bash}
+head output/segregation/albopictus/offspring_freq_family_fam1.frqx
+```
+
+Minor allele allele count of one family
+
+```{bash}
+head output/segregation/albopictus/offspring_freq_family_fam1.frq
+```
+
+Counts of each allele
+
+```{bash}
+head output/segregation/albopictus/offspring_freq_family_fam1.frq.counts
+```
+
+### 4.6 Clean the Plink output files to import into R
+
+The code below will convert the .frq files into csv files. Plink put uneven number of tabs or spaces between the variables.
+
+```{bash clean_frq}
+for file in output/segregation/albopictus/*.frq
+do
+  awk '{$1=$1; OFS=","}1' "$file" > "${file%.frq}.clean.csv"
+done
+```
+
+Check one file
+
+```{bash}
+head output/segregation/albopictus/offspring_freq_family_fam1.clean.csv
+```
+
+### 4.7 Import frequency and counts
+
+Here is the summary of what the code below does:
+
+1. **Define family names:** A list of family names to be analyzed is defined and stored in the family_names variable.
+
+2. **Initialize storage lists:** Two empty lists, family_parents and family_offspring, are created to store parental and offspring data respectively for each family.
+
+3. **Read and store data:** A for loop is implemented to iterate over the family names. For each family:
+   
+   - **File path construction:** File paths for the parent and offspring data are constructed using string concatenation with the paste0 function.
+
+   - **Data read:** Parent and offspring data are read from the constructed file paths using the read.csv function, specifying column names and types. 
+
+   - **Data storage:** The read parental data is added to the family_parents list for further processing.
+
+4. **Calculation and update of frequencies and counts:** Another for loop is started to iterate over the family names. For each family:
+
+   - **Data retrieval:** Offspring's NCHROBS data and the corresponding parental data are retrieved from the family_offspring and family_parents lists respectively.
+
+   - **Calculate expected frequencies and counts:** Expected frequencies and counts based on Minor Allele Frequency (MAF) for the parental data are calculated using the mutate function, adding these as new columns to the parental data.
+
+   - **Update parental data:** The parental data in the family_parents list is updated with the new calculated columns.
+
+   - **Calculate observed frequencies and counts:** Observed frequencies and counts based on MAF for the offspring data are calculated using the mutate function, adding these as new columns to the offspring data.
+
+   - **Update offspring data:** The family_offspring list is updated with these newly calculated columns.
+
+In summary, the main purpose of this R script below is to process and calculate the expected and observed frequencies and counts of SNPs for multiple families.
+
+```{r import_counts}
+# Define the list of family names
+family_names <-
+  c("fam1", "fam2", "fam3", "fam4", "fam5", "fam6")
+
+# Create empty lists to store the data for each family
+family_parents <- list()
+family_offspring <- list()
+
+# Read and process the data for each family
+for (family_name in family_names) {
+  # Parental and offspring data paths
+  parent_file_path <-
+    paste0(
+      "output/segregation/albopictus/parents_freq_family_",
+      family_name,
+      ".clean.csv"
+    )
+  offspring_file_path <-
+    paste0(
+      "output/segregation/albopictus/offspring_freq_family_",
+      family_name,
+      ".clean.csv"
+    )
+
+  # Read the input files
+  family_parent <-
+    read.csv(
+      parent_file_path,
+      stringsAsFactors = FALSE,
+      col.names = c("CHR", "SNP", "A1", "A2", "MAF", "NCHROBS"),
+      colClasses = c(
+        "character",
+        "character",
+        "character",
+        "character",
+        "numeric",
+        "numeric"
+      )
+    )
+  family_offspring[[family_name]] <-
+    read.csv(
+      offspring_file_path,
+      stringsAsFactors = FALSE,
+      col.names = c("CHR", "SNP", "A1", "A2", "MAF", "NCHROBS"),
+      colClasses = c(
+        "character",
+        "character",
+        "character",
+        "character",
+        "numeric",
+        "numeric"
+      )
+    )
+
+  # Add the processed parental data to the list
+  family_parents[[family_name]] <- family_parent
+}
+
+# Iterate over each family to calculate the expected and observed frequencies and counts
+for (family_name in family_names) {
+  # Get the offspring NCHROBS for this family
+  offspring_NCHROBS <- family_offspring[[family_name]]$NCHROBS
+
+  # Get the parental data for this family
+  parental_data <- family_parents[[family_name]]
+
+  # Calculate the expected frequencies and counts based on MAF
+  parental_data <- parental_data |>
+    mutate(
+      Expected_A1 = 1 - MAF,
+      Expected_A2 = MAF,
+      Expected_A1_count = Expected_A1 * offspring_NCHROBS,
+      Expected_A2_count = Expected_A2 * offspring_NCHROBS
+    )
+
+  # Update the parental data
+  family_parents[[family_name]] <- parental_data
+
+  # Calculate the observed frequencies and counts
+  family_offspring[[family_name]] <-
+    family_offspring[[family_name]] |>
+    mutate(
+      Observed_A1 = 1 - MAF,
+      Observed_A2 = MAF,
+      Observed_A1_count = Observed_A1 * NCHROBS,
+      Observed_A2_count = Observed_A2 * NCHROBS
+    )
+}
+```
+
+Check the output
+
+```{r check_output_freq}
+str(family_offspring)
+str(family_parents)
+```
+
+Here are a few possibilities to consider if our observed frequencies are showing a wider range of values than expected:
+
+**1. Sample Size:**
+   - If our sample sizes are small, this could result in greater variation in the observed frequencies due to the inherent randomness in sampling.
+
+**2. Sampling Bias:**
+   - If the samples are not random, or if certain genotypes are more likely to be sampled than others, this could skew the observed frequencies.
+
+**3. Genetic Drift:**
+   - This is a random change in allele frequencies that occurs. Over time, it can lead to large changes in allele frequencies, especially if the population size is small.
+
+**4. Genetic Linkage:**
+   - If the SNPs are close to each other on a chromosome, they might be inherited together more often than would be expected by chance, leading to non-random associations between alleles.
+
+**5. Non-random Mating:**
+   - If mating is not random within the population, this could also skew the observed frequencies.
+
+## 5. Data Visualization
+
+We can prepare the data for plotting with the code below. In summary, the code does:
+
+**1. Prepare tibbles for storing results:**
+   - The "result_df_all" and "result_df_shared" tibbles are initialized as empty data structures to store the results.
+
+**2. Define list names:**
+   - A vector "list_names" is defined to store the names of the lists (e.g., family names) to be analyzed.
+
+**3. Define intervals and labels:**
+   - The "intervals" vector is defined as a sequence of values from 0 to 1 with a step of 0.1.
+   - The "interval_labels" vector is defined to store the labels for each interval.
+
+**4. Initialize epsilon value:**
+   - The epsilon value is set as a small value to avoid exact bin border values.
+
+**5. Retrieve SNP lists from each family:**
+   - SNP lists from both parents and offspring are obtained for each family using the "lapply" function and stored in "all_offspring_snps" and "all_parents_snps" respectively.
+
+**6. Find shared SNPs among families:**
+   - The Reduce function is used to find the SNPs that are common to all families by taking the intersection of all offspring and parent SNP lists.
+
+**7. Loop over list names:**
+   - A loop is implemented to iterate over each family in the "list_names" vector.
+
+**8. Offspring processing for all SNPs:**
+   - Offspring data is processed for all SNPs in the current family:
+     - Observed allele frequencies are binned into intervals using the "cut" function.
+     - The data is transformed to a longer format using "pivot_longer".
+     - Grouping and summarization are performed based on family, type, variable, and interval using "group_by" and "summarize".
+     - The processed data is added to "tmp_offspring_all".
+
+**9. Parents processing for all SNPs:**
+   - Parental data is processed for all SNPs in the current family following a similar process as in step 8.
+
+**10. Combine all SNPs for analysis:**
+    - The processed offspring and parental data for all SNPs in the current family are combined and added to "result_df_all".
+
+**11. Offspring processing for shared SNPs:**
+    - Offspring data is processed for shared SNPs among families (common SNPs):
+      - Filtering is applied to select only the shared SNPs.
+      - Observed allele frequencies are binned into intervals using the "cut" function.
+      - The data is transformed to a longer format using "pivot_longer".
+      - Grouping and summarization are performed based on family, type, variable, and interval using "group_by" and "summarize".
+      - The processed data is added to "tmp_offspring_shared".
+
+**12. Parents processing for shared SNPs:**
+    - Parental data is processed for shared SNPs among families (common SNPs) following a similar process as in step 11.
+
+**13. Combine shared SNPs for analysis:**
+    - The processed offspring and parental data for shared SNPs in the current family are combined and added to "result_df_shared".
+
+**14. Add a new variable for faceting:**
+    - A new variable "Family_Type" is created by combining family and type information in "result_df_all" and "result_df_shared".
+
+**15. Data wrangling steps before plotting:**
+    - Variable names in "result_df_all" and "result_df_shared" are modified by removing the "Interval_" prefix.
+
+**16. Set desired order for variable levels:**
+    - The "desired_order" vector is defined to specify the desired order of variable levels.
+    - Variable columns in "result_df_all" and "result_df_shared" are converted to factors with the desired order using the "factor" function.
+
+
+```{r binning_data}
+# Prepare two empty tibbles to store the results
+result_df_all <- tibble()
+result_df_shared <- tibble()
+
+# List names
+list_names <-
+  c(
+    "fam1", "fam2", "fam3", "fam4", "fam5", "fam6"
+  )
+
+# Define intervals and labels
+intervals <-
+  seq(
+    0, 1, 0.1
+  )
+interval_labels <-
+  c(
+    "0 ~ 0.1",
+    "0.1 ~ 0.2",
+    "0.2 ~ 0.3",
+    "0.3 ~ 0.4",
+    "0.4 ~ 0.5",
+    "0.5 ~ 0.6",
+    "0.6 ~ 0.7",
+    "0.7 ~ 0.8",
+    "0.8 ~ 0.9",
+    "0.9 ~ 1"
+  )
+
+# Initialize a small epsilon value (we add this tiny tiny number to our values, so when we bin the data, we will not have values at the exact bin border)
+epsilon <-
+  .Machine$double.eps^0.5
+
+# Get the SNP lists from each family in both parents and offspring
+all_offspring_snps <-
+  lapply(
+    family_offspring, function(df) {
+      df$SNP
+    }
+  )
+
+all_parents_snps <- lapply(
+  family_parents, function(df) {
+    df$SNP
+  }
+)
+
+# Find SNPs that are common to all families
+shared_snps <-
+  Reduce(
+    intersect,
+    c(
+      all_offspring_snps, all_parents_snps
+    )
+  )
+
+# Loop over both lists
+for (i in seq_along(list_names)) {
+  # Offspring
+  tmp_offspring <- family_offspring[[i]]
+
+  # Parents
+  tmp_parents <- family_parents[[i]]
+
+  # Offspring processing for all SNPs
+  tmp_offspring_all <- tmp_offspring |>
+    mutate(
+      Interval_Observed_A1 = cut(
+        Observed_A1,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      ),
+      Interval_Observed_A2 = cut(
+        Observed_A2,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      )
+    ) |>
+    pivot_longer(
+      cols = starts_with("Interval"),
+      names_to = "Variable",
+      values_to = "Interval"
+    ) |>
+    group_by(
+      Family = list_names[i],
+      Type = "Offspring",
+      Variable,
+      Interval
+    ) |>
+    summarize(
+      Count = n(), .groups = "drop"
+    ) |>
+    ungroup()
+
+  # Parents processing for all SNPs
+  tmp_parents_all <-
+    tmp_parents |>
+    mutate(
+      Interval_Expected_A1 = cut(
+        Expected_A1,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      ),
+      Interval_Expected_A2 = cut(
+        Expected_A2,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      )
+    ) |>
+    pivot_longer(
+      cols = starts_with("Interval"),
+      names_to = "Variable",
+      values_to = "Interval"
+    ) |>
+    group_by(
+      Family = list_names[i],
+      Type = "Parents",
+      Variable,
+      Interval
+    ) |>
+    summarize(
+      Count = n(), .groups = "drop"
+    ) |>
+    ungroup()
+
+  # Combine all SNPs
+  result_df_all <-
+    bind_rows(
+      result_df_all,
+      tmp_offspring_all,
+      tmp_parents_all
+    )
+
+  # Offspring processing for shared SNPs
+  tmp_offspring_shared <-
+    tmp_offspring |>
+    filter(
+      SNP %in% shared_snps
+    ) |>
+    mutate(
+      Interval_Observed_A1 = cut(
+        Observed_A1,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      ),
+      Interval_Observed_A2 = cut(
+        Observed_A2,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      )
+    ) |>
+    pivot_longer(
+      cols = starts_with("Interval"),
+      names_to = "Variable",
+      values_to = "Interval"
+    ) |>
+    group_by(
+      Family = list_names[i],
+      Type = "Offspring",
+      Variable,
+      Interval
+    ) |>
+    summarize(
+      Count = n(), .groups = "drop"
+    ) |>
+    ungroup()
+
+  # Parents processing for shared SNPs
+  tmp_parents_shared <-
+    tmp_parents |>
+    filter(
+      SNP %in% shared_snps
+    ) |>
+    mutate(
+      Interval_Expected_A1 = cut(
+        Expected_A1,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      ),
+      Interval_Expected_A2 = cut(
+        Expected_A2,
+        breaks = intervals + epsilon,
+        labels = interval_labels
+      )
+    ) |>
+    pivot_longer(
+      cols = starts_with("Interval"),
+      names_to = "Variable",
+      values_to = "Interval"
+    ) |>
+    group_by(
+      Family = list_names[i],
+      Type = "Parents",
+      Variable,
+      Interval
+    ) |>
+    summarize(
+      Count = n(), .groups = "drop"
+    ) |>
+    ungroup()
+
+  # Combine shared SNPs
+  result_df_shared <-
+    bind_rows(
+      result_df_shared,
+      tmp_offspring_shared,
+      tmp_parents_shared
+    )
+}
+
+# Add a new variable for faceting
+result_df_all <-
+  result_df_all |> mutate(
+    Family_Type = paste(
+      Family,
+      Type,
+      sep = "_"
+    )
+  )
+result_df_shared <-
+  result_df_shared |>
+  mutate(
+    Family_Type = paste(
+      Family,
+      Type,
+      sep = "_"
+    )
+  )
+
+# After data wrangling step before the plot
+result_df_all$Variable <-
+  str_remove(
+    result_df_all$Variable,
+    "Interval_"
+  )
+result_df_shared$Variable <-
+  str_remove(
+    result_df_shared$Variable,
+    "Interval_"
+  )
+
+# Set desired order
+desired_order <-
+  c(
+    "Expected_A1",
+    "Observed_A1",
+    "Expected_A2",
+    "Observed_A2"
+  )
+
+# Convert Variable to a factor with desired levels
+result_df_all$Variable <-
+  factor(
+    result_df_all$Variable,
+    levels = desired_order
+  )
+result_df_shared$Variable <-
+  factor(
+    result_df_shared$Variable,
+    levels = desired_order
+  )
+```
+
+### 5.1 Get the unique total SNP count across all families that we can test
+
+```{r check_number_unique_SNPs}
+# count of SNPs across all families
+offspring_SNPs <-
+  unlist(
+    lapply(
+      family_offspring, function(df) {
+        df$SNP
+      }
+    )
+  )
+parent_SNPs <- unlist(lapply(family_parents, function(df) {
+  df$SNP
+}))
+
+# Combine offspring and parents SNPs
+all_SNPs <- c(offspring_SNPs, parent_SNPs)
+
+# Get the number of unique SNPs
+num_unique_SNPs <- length(unique(all_SNPs))
+
+print(num_unique_SNPs)
+```
+
+### 5.2 Get the "shared" SNPs (genotyped in all 6 families)
+
+These are the loci for which one parent was heterozygous in all six families. Most of the loci do not follow this trend. It could be due to selection, drift, or other factors.
+
+```{r shered_snps}
+# Initialize shared_snps with the SNPs of the first family
+shared_snps <-
+  family_offspring[[1]]$SNP
+
+# Loop over the rest of the lists
+for (i in 2:length(list_names)) {
+  # Get the intersection of shared_snps and the SNPs of the current family
+  shared_snps <- intersect(shared_snps, family_offspring[[i]]$SNP)
+}
+
+# The length of shared_snps gives the total number of SNPs shared among all families
+num_shared_snps <-
+  length(shared_snps)
+
+print(num_shared_snps)
+```
+
+### 5.3 SNPs "Shared" among at least two families
+
+We can count how many loci we can test that are heterozygous in at least one parent in two crosses
+
+```{r shared_2_families}
+# Combine SNPs from all families into a single vector
+all_snps <-
+  c(family_offspring[[1]]$SNP,
+    family_offspring[[2]]$SNP,
+    family_offspring[[3]]$SNP)
+
+# Count the occurrence of each SNP
+snp_counts <- table(all_snps)
+
+# Get the SNPs that occur in at least two families
+shared_snps <- names(snp_counts[snp_counts >= 2])
+
+# The length of shared_snps gives the total number of SNPs shared among at least two families
+num_shared_snps <- length(shared_snps)
+
+print(num_shared_snps)
+```
+
+
+### 5.4 Plot allele counts
+
+Now we can plot the data with the allele counts
+
+```{r plot_counts, fig.width=9, fig.height=8, warning=FALSE}
+# source function theme
+source(
+  here(
+    "scripts", "analysis", "my_theme.R"
+  )
+)
+
+# create plot with the frequencies - use result_df_all for all SNPs or result_df_shared for the shared SNPs among the three families
+ggplot(
+  result_df_shared,
+  aes(
+    x = Interval,
+    y = Count,
+    fill = Variable
+  )
+) +
+  geom_bar(
+    stat = "identity",
+    color = "lightgray",
+    width = 0.9,
+    position = "dodge"
+  ) +
+  geom_text(
+    aes(
+      label = scales::comma(Count)
+    ),
+    size = 2,
+    position = position_dodge(width = 0.9)
+  ) +
+  facet_grid(
+    Family ~ Variable,
+    scales = "free_y", space = "free"
+  ) +
+  labs(
+    x = "Frequency",
+    y = "Count",
+    title = "Binned allele counts for the 'recommended' SNPs from Axiom Suite",
+    caption = "Allele counts of 101,400 SNPs across all families."
+    # caption = "Allele counts of 5,249 SNPs shared among the families."
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Expected_A1" = "#56B4E9",
+      "Expected_A2" = "#E69F00",
+      "Observed_A1" = "#009E73",
+      "Observed_A2" = "#F0E442"
+    ),
+    guide = "none"
+  ) +
+  scale_y_continuous(
+    labels = scales::comma, expand = c(0.15, 0.15)
+  ) +
+  scale_x_discrete(
+    drop = FALSE
+  ) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(
+      hjust = 1,
+      margin = margin(t = 10),
+      face = "italic"
+    ),
+    legend.position = "none",
+    # Remove the legend
+    panel.spacing = unit(0.5, "lines"),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(face = "bold")
+  ) +
+  coord_flip()
+
+# save plot
+ggsave(
+  here(
+    "output",
+    "segregation",
+    "albopictus",
+    "allele_counts_all_SNPS.pdf"
+    # "allele_frequencies_shared_SNPS.pdf"
+  ),
+  width = 9,
+  height = 10,
+  units = "in"
+)
+```
+
+We see some NAs in the offspring. It is because we found the segregating loci in each cross and extracted the list of SNPs from the offspring. However, some of this SNPs had missing genotype calls in the offspring, and therefore we have NAs (no counts). We need to remove them later on in both parental and offspring data frames.
+
+### 5.5 Pie plot of the counts
+
+```{r pie_plot, fig.width=10, fig.height=9}
+# Calculate percentages for each pie
+result_df_pie <-
+  result_df_shared |>
+  group_by(
+    Family, Type, Variable, Interval
+  ) |>
+  summarise(
+    count = sum(Count), .groups = "drop"
+  ) |>
+  group_by(
+    Family, Type, Variable
+  ) |>
+  mutate(
+    percentage = count / sum(count) * 100
+  ) |>
+  ungroup() |>
+  group_by(
+    Family, Type, Variable
+  ) |>
+  mutate(
+    total_count = sum(count)
+  ) |>
+  mutate(
+    proportional_count = count / total_count
+  ) |>
+  ungroup()
+
+# Generate palette with as many colors as intervals
+color_palette <-
+  colorRampPalette(brewer.pal(11, "Set3"))(length(unique(result_df_pie$Interval)))
+
+# Plot
+ggplot(
+  result_df_pie, aes(x = "", y = count, fill = Interval)
+) +
+  geom_bar(
+    width = 1, stat = "identity"
+  ) +
+  geom_text_repel(
+    aes(
+      y = count / 2,
+      label = paste0(
+        round(percentage, 1),
+        "%"
+      )
+    ),
+    position = position_stack(vjust = 0.0),
+    size = 3,
+    max.overlaps = Inf,
+    force = 10
+  ) + # Increase max.overlaps and force
+  coord_polar(
+    "y",
+    start = 0
+  ) +
+  facet_grid(
+    Family ~ Variable
+  ) +
+  my_theme() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(),
+    strip.text.x = element_text(
+      size = 8,
+      colour = "black",
+      face = "bold"
+    ),
+    strip.text.y = element_text(
+      size = 8,
+      colour = "black",
+      face = "bold"
+    )
+  ) +
+  scale_fill_manual(
+    values = color_palette
+  ) +
+  labs(
+    title = "Pie Chart of Allele Counts of 101,400 SNPs across all families",
+    # title = "Pie Chart of Allele Counts of 5,249 SNPs genotyped in all families",
+    fill = "Interval"
+  )
+
+# Save the plot
+ggsave(
+  here(
+    "output",
+    "segregation",
+    "albopictus",
+    "allele_counts_pie_plots_all_SNPs.pdf"
+    # "allele_counts_pie_plots_shared_SNPs.pdf"
+  ),
+  width = 9,
+  height = 10,
+  units = "in"
+)
+```
+
+
+### 5.6 Check for NAs
+
+We see that we have some missing genotype calls for some SNPs in the offspring. We can check how many we have with the code below.
+
+```{r count_NAs_nested_lists_1}
+# Count NAs in each column of family_parents
+cat("NAs in family_data_parents:")
+print(colSums(sapply(family_parents, function(df) colSums(is.na(df)))))
+
+# Count NAs in each column of family_offspring
+cat("NAs in family_data_parents:")
+print(colSums(sapply(family_offspring, function(df) colSums(is.na(df)))))
+```
+
+## 6. Tidying the data for statistical comparisons
+
+First we remove SNPs within each family that are missing in the offspring
+
+### 6.1 Remove NAs
+
+```{r remove_NAs_nested_lists_2}
+# Remove NA values from family_data_parents
+family_parents_2 <- lapply(family_parents, function(df) {
+  df |>
+    drop_na(SNP, starts_with("Expected"))
+})
+
+# Remove NA values from family_data_offspring
+family_offspring_2 <- lapply(family_offspring, function(df) {
+  df |>
+    drop_na(SNP, starts_with("Observed"))
+})
+```
+
+Check if it worked
+
+```{r count_NAs_nested_lists_3}
+# Count NAs in each column of family_parents
+cat("NAs in family_data_parents:")
+print(colSums(sapply(family_parents_2, function(df) colSums(is.na(df)))))
+
+# Count NAs in each column of family_offspring
+cat("NAs in family_data_parents:")
+print(colSums(sapply(family_offspring_2, function(df) colSums(is.na(df)))))
+```
+
+Check the output
+
+```{r}
+str(family_parents_2)
+str(family_offspring_2)
+```
+
+### 6.2 Sort by SNP id
+
+```{r sort_by_SNP_id}
+# Sort family_offspring_2 by SNP column
+family_offspring_2 <- lapply(family_offspring_2, function(df) df[order(df$SNP), ])
+
+# Sort family_parents_2 by SNP column
+family_parents_2 <- lapply(family_parents_2, function(df) df[order(df$SNP), ])
+```
+
+
+
+Sanity checks
+
+Check for differences in the SNPs within family, comparing paretal and offspring SNPs
+```{r}
+# Create an empty vector to store families with discrepancies
+families_with_discrepancies <- c()
+
+# Loop over each family in the parents and offspring list
+for (family in names(family_parents_2)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_2[[family]]
+  offspring_data <- family_offspring_2[[family]]
+  
+  # Check if the number of rows (observations) is the same for both parents and offspring
+  if (nrow(parent_data) != nrow(offspring_data)) {
+    cat(paste("Number of observations differs for family", family, "\n"))
+  }
+  
+  # Check if the SNP ids are the same for both parents and offspring and are in the same order
+  if (!identical(parent_data$SNP, offspring_data$SNP)) {
+    # Calculate number of discrepancies
+    discrepancies <- sum(parent_data$SNP != offspring_data$SNP)
+    cat(paste("SNP ids and/or order differ for family", family, "with", discrepancies, "discrepancies. \n"))
+    # Append the family name to the vector
+    families_with_discrepancies <- c(families_with_discrepancies, family)
+  }
+}
+
+# Output families with discrepancies
+families_with_discrepancies
+```
+We can remove the SNPs are are missing between the parents and offspring. We did remove those SNPs with counts below 5, so we need to make sure we have the same SNPs in the same order.
+
+```{r}
+# Initialize two empty lists to store the resulting data frames
+family_parents_3 <- list()
+family_offspring_3 <- list()
+
+# Loop over each family
+for (family in names(family_parents_2)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_2[[family]]
+  offspring_data <- family_offspring_2[[family]]
+  
+  # Perform an inner join based on SNP column to find common SNPs
+  common_data <- merge(parent_data, offspring_data, by = "SNP")
+  
+  # Find the rows in the parent and offspring data that have the common SNPs
+  parent_data_common <- parent_data[parent_data$SNP %in% common_data$SNP, ]
+  offspring_data_common <- offspring_data[offspring_data$SNP %in% common_data$SNP, ]
+  
+  # Sort the data frames by the SNP column
+  parent_data_common <- parent_data_common[order(parent_data_common$SNP), ]
+  offspring_data_common <- offspring_data_common[order(offspring_data_common$SNP), ]
+  
+  # Store the resulting data frames in the corresponding lists
+  family_parents_3[[family]] <- parent_data_common
+  family_offspring_3[[family]] <- offspring_data_common
+}
+```
+
+Now check again for discrepancies
+```{r}
+# Create an empty vector to store families with discrepancies
+families_with_discrepancies <- c()
+
+# Loop over each family in the parents and offspring list
+for (family in names(family_parents_3)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_3[[family]]
+  offspring_data <- family_offspring_3[[family]]
+  
+  # Check if the number of rows (observations) is the same for both parents and offspring
+  if (nrow(parent_data) != nrow(offspring_data)) {
+    cat(paste("Number of observations differs for family", family, "\n"))
+  }
+  
+  # Check if the SNP ids are the same for both parents and offspring and are in the same order
+  if (!identical(parent_data$SNP, offspring_data$SNP)) {
+    # Calculate number of discrepancies
+    discrepancies <- sum(parent_data$SNP != offspring_data$SNP)
+    cat(paste("SNP ids and/or order differ for family", family, "with", discrepancies, "discrepancies. \n"))
+    # Append the family name to the vector
+    families_with_discrepancies <- c(families_with_discrepancies, family)
+  }
+}
+
+# Output families with discrepancies
+families_with_discrepancies
+```
+
+Now all the SNP ids match and are in the same order. We can compare the counts of one allele to see if it is correct in the new nested list.
+
+Compare some counts to see if they match before and after data manipulation
+```{r}
+# Initialize a list to store the dataframes for each family
+df_list <- list()
+
+# Iterate over each family
+for (family in names(family_parents_2)) {
+  # Get the initial and processed data for the current family
+  parent_data_2 <- family_parents_2[[family]]
+  parent_data_3 <- family_parents_3[[family]]
+
+  # Extract the relevant columns
+  parent_data_2_subset <- parent_data_2[, c("SNP", "Expected_A1_count")]
+  parent_data_3_subset <- parent_data_3[, c("SNP", "Expected_A1_count")]
+
+  # Rename the columns for clarity
+  colnames(parent_data_2_subset) <- c("SNP_id", "family_parents_2")
+  colnames(parent_data_3_subset) <- c("SNP_id", "family_parents_3")
+
+  # Merge the two dataframes on the SNP_id column
+  merged_data <- merge(parent_data_2_subset, parent_data_3_subset, by = "SNP_id")
+
+  # Add the merged dataframe to the list
+  df_list[[family]] <- merged_data
+}
+
+# Combine all the dataframes in the list into a single dataframe
+final_table <- do.call("rbind", df_list)
+
+# Check the output
+head(final_table)
+```
+
+Everything looks good.
+
+## 7. Power simulation
+
+We can simulate how much power we would have with different parameters. Summary of the code below:
+1. **Define the range of significance levels, effect sizes, and sample sizes:**
+   - The vector "significance_levels" contains different significance levels to be analyzed.
+   - The vector "effect_sizes" contains different effect sizes to be analyzed.
+   - The vector "sample_sizes" contains different sample sizes to be analyzed.
+
+2. **Create an empty data frame to store the results:**
+   - The data frame "df" is created to store the results of the power analysis.
+
+3. **Perform power analysis for each combination of parameters:**
+   - Two nested "for" loops are used to iterate over each combination of significance level and sample size.
+   - For each combination, a data frame "df_comb" is created to store the results for that specific combination.
+   - The columns "effect_size", "significance_level", "sample_size", and "power" are initialized in "df_comb".
+
+4. **Perform power analysis for each effect size in the current combination:**
+   - Another "for" loop is used to iterate over each effect size in the current combination.
+   - For each effect size, the power analysis is performed using the "pwr.chisq.test" function.
+   - The resulting power value is stored in the corresponding row of "df_comb".
+
+5. **Append the data frame for the current combination to the overall data frame:**
+   - After performing the power analysis for all effect sizes in the current combination, "df_comb" is appended to the overall data frame "df" using the "rbind" function.
+
+The code iterates over all combinations of significance levels, effect sizes, and sample sizes, and calculates the power for each combination using the "pwr.chisq.test" function. The results are stored in the data frame "df", which will contain the effect size, significance level, sample size, and corresponding power for each combination.
+
+```{r plot_power_estimates}
+# Define the range of significance levels, effect sizes, and sample sizes
+significance_levels <- c(0.001, 0.01, 0.05, 0.1)
+effect_sizes <- c(0.01, 0.05, 0.5)
+sample_sizes <- c(10, 20, 30, 40, 50, 60, 70) # we have 30 to 32 offspring per family.
+
+# Create an empty data frame to store the results
+df <- data.frame()
+
+# Perform power analysis for each combination of parameters
+for (significance_level in significance_levels) {
+  for (sample_size in sample_sizes) {
+    # Create a data frame for the current combination of significance level and sample size
+    df_comb <- data.frame(
+      effect_size = effect_sizes,
+      significance_level = rep(significance_level, length(effect_sizes)),
+      sample_size = rep(sample_size, length(effect_sizes)),
+      power = rep(NA, length(effect_sizes))
+    )
+
+    # Perform power analysis for each effect size in the current combination
+    for (i in seq_along(effect_sizes)) {
+      effect_size <- effect_sizes[i]
+      power <-
+        pwr.chisq.test(
+          w = effect_size,
+          N = sample_size,
+          df = 1,
+          sig.level = significance_level,
+          power = NULL
+        )$power
+      df_comb$power[i] <- power
+    }
+
+    # Append the data frame for the current combination to the overall data frame
+    df <- rbind(df, df_comb)
+  }
+}
+
+# Convert head(results) to a tibble
+table_result <- as_tibble(df)
+
+# Create a flextable object
+flex_table <- flextable(table_result)
+
+# Set the formatting options if needed
+# flex_table <- flex_table %>%
+#   theme_box()  # Example of adding a border around the table
+
+# Print the flextable
+flex_table
+```
+
+Create plot
+```{r create_plot_power_estimates}
+# Create a line plot with points for each combination of significance level and sample size
+ggplot(
+  df,
+  aes(
+    x = effect_size,
+    y = power,
+    group = sample_size
+  )
+) +
+  geom_line() +
+  geom_point() +
+  facet_grid(
+    significance_level ~ sample_size,
+    scales = "free"
+  ) +
+  labs(
+    x = "Effect Size",
+    y = "Power"
+  ) +
+  ggtitle(
+    "Effect Size vs. Power by Significance Level and Sample Size"
+  ) +
+  my_theme() +
+  theme(
+    panel.spacing.x = unit(1, "lines")
+  ) +
+  scale_x_log10(
+    breaks = c(0.01, 0.05, 0.5)
+  ) +
+  ylim(0, 1)
+
+# save plot
+ggsave(
+  here(
+    "output", "segregation", "albopictus", "power_segregation.pdf"
+  ),
+  width = 8,
+  height = 5,
+  units = "in"
+)
+```
+
+
+## 8. Estimate power for our data
+
+The power estimation code uses Cohen's w (effect size measure for chi-square test), which is calculated based on the
+difference between observed and expected frequencies. This does not directly apply the chi-square test, but uses the
+calculation based on chi-square distribution to estimate power.
+
+Here is a summary of what the code below is doing:
+
+1. **Define parameters for power analysis:**
+   - The desired effect size is set to 0.01.
+   - The chosen significance level is set to 0.05.
+   - An empty vector sample_sizes is created to store the sample sizes.
+
+2. **Read the .fam files and calculate sample sizes:**
+   - A loop is implemented over the family_names vector.
+   - For each family, the corresponding .fam file is read using the read.table function.
+   - The number of offspring is determined by counting the rows in the fam_data table.
+   - The sample size is appended to the sample_sizes vector.
+
+3. **Perform power analysis for each family:**
+   - Another loop is implemented over the sample_sizes vector.
+   - The current family name and sample size are retrieved.
+   - The parental and offspring data for the current family are assigned from family_parents_2 and family_offspring_2 respectively.
+   - Common SNPs between parents and offspring for the current family are identified using the intersect function.
+   - The parental and offspring data frames are subsetted to include only the common SNPs.
+   - Information about the family name, number of offspring, observed genotype frequencies, and expected genotype frequencies is printed.
+   - The validity of the observed genotype frequencies and expected genotype frequencies is checked.
+   - Power analysis is performed using the pwr.chisq.test function to calculate the power based on the observed and expected genotype frequencies.
+   - The calculated power is printed.
+
+```{r estimate_power_for_each_SNP}
+# For the first 100 SNPs
+# Define parameters for power analysis
+effect_size <- 0.01  # Desired effect size
+significance_level <- 0.05  # Chosen significance level
+
+# Create an empty tibble to store the results
+results <- tibble(
+  Family = character(),
+  SNP = character(),
+  Expected_A1_count = numeric(),
+  Observed_A1_count = numeric(),
+  Power_A1 = numeric(),
+  Expected_A2_count = numeric(),
+  Observed_A2_count = numeric(),
+  Power_A2 = numeric()
+)
+
+# Perform power analysis for each family
+for (i in 1:length(family_names)) {
+  family <- family_names[i]
+  
+  family_parents <- family_parents_2[[i]]
+  family_offspring <- family_offspring_2[[i]]
+  
+  # Find common SNPs between parents and offspring for the current family
+  common_snps <- intersect(family_parents$SNP, family_offspring$SNP)
+  
+  # Select only the first 100 common SNPs for testing
+  common_snps <- head(common_snps, 100) # comment out this line if you want to test all SNPs, it takes a long time
+
+  # Iterate over each common SNP
+  for (snp in common_snps) {
+    # Subset parents and offspring data frames to include only the current SNP
+    family_parents_snp <- subset(family_parents, SNP == snp)
+    family_offspring_snp <- subset(family_offspring, SNP == snp)
+    
+    # Check if the subset resulted in any rows
+    if (nrow(family_parents_snp) == 0 || nrow(family_offspring_snp) == 0) {
+      next  # Skip to the next SNP
+    }
+    
+    # Retrieve observed genotype frequencies in offspring
+    observed_A1 <- family_offspring_snp$Observed_A1_count
+    observed_A2 <- family_offspring_snp$Observed_A2_count
+    
+    # Retrieve expected genotype frequencies in parents
+    expected_A1 <- family_parents_snp$Expected_A1_count
+    expected_A2 <- family_parents_snp$Expected_A2_count
+    
+    # Perform power analysis for genotype A1
+    power_A1 <- pwr.chisq.test(
+      w = sum((observed_A1 - expected_A1)^2 / expected_A1),
+      N = family_offspring_snp$NCHROBS[1],
+      df = 1,
+      sig.level = significance_level,
+      power = NULL
+    )$power
+    
+    # Perform power analysis for genotype A2
+    power_A2 <- pwr.chisq.test(
+      w = sum((observed_A2 - expected_A2)^2 / expected_A2),
+      N = family_offspring_snp$NCHROBS[1],
+      df = 1,
+      sig.level = significance_level,
+      power = NULL
+    )$power
+    
+    # Store the results in the tibble
+    result <- tibble(
+      Family = family,
+      SNP = snp,
+      Expected_A1_count = sum(expected_A1),
+      Observed_A1_count = sum(observed_A1),
+      Power_A1 = power_A1,
+      Expected_A2_count = sum(expected_A2),
+      Observed_A2_count = sum(observed_A2),
+      Power_A2 = power_A2
+    )
+    results <- bind_rows(results, result)
+  }
+}
+
+# view the results
+# head(results)
+
+# Convert head(results) to a tibble
+table_result <- as_tibble(head(results))
+
+# Create a flextable object
+flex_table <- flextable(table_result)
+
+# Set the formatting options if needed
+# flex_table <- flex_table %>%
+#   theme_box()  # Example of adding a border around the table
+
+# Print the flextable
+flex_table
+```
+
+
+We observe that the power is different from family to family, and from SNP to SNP. The mean power is 0.5952 and the min
+is 0.01.
+
+```{r}
+summary(results)
+```
+
+Overall, the power analysis suggests that for all three families, the sample sizes and observed genotype frequencies
+provide sufficient statistical power to detect an effect of the desired size (effect size = 0.01) at a significance
+level of 0.05.
+
+
+## 9. Number of SNPs genotyped in the parents that could be tested
+
+Each family is a cross of different populations. They have different sets of SNPs genotyped as heterozygous in one parent.
+
+### 9.1 Venn diagram 
+
+We can make a Venn diagram to represent the shared and unique SNPs across all families. 
+
+```{r to_test, message=FALSE, warning=FALSE}
+# List all families
+families <- c("fam1", "fam2", "fam3", "fam4", "fam5", "fam6")
+
+# Initialize a list to store the data
+data_list <- list()
+
+# Loop through each family
+for (fam in families) {
+  # Read in the file as a vector
+  family_segregating_SNPs_R <-
+    read_table(
+      paste0(
+        "output/segregation/albopictus/parents_family_",
+        fam,
+        "_segregating_SNPs_R.txt"
+      ),
+      col_names = FALSE
+    )[[1]]
+  
+  # Add the data to the list
+  data_list[[fam]] <- family_segregating_SNPs_R
+}
+
+# Define a vector of color-blind friendly colors
+colors <-
+  c("#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#F0E442",
+    "#000000",
+    "#CC79A7")
+
+# Save combined Venn diagram to PDF
+output_path <-
+  here("output",
+       "segregation",
+       "albopictus",
+       "segregating_SNPs_parents_6_venn.pdf")
+
+# Create a PDF device
+pdf(output_path, width = 5, height = 5)
+par(mar = c(5, 5, 7, 2) + 0.1)  # Adjust margins (bottom, left, top, right)
+
+# Create the 6-way Venn diagram with filled sets
+venn(data_list,
+     zcolor = colors,
+     opacity = 0.4,
+     box = FALSE,
+     ellipse = FALSE,
+     lty = "blank")
+
+# Adjust the title position and size
+title(
+  main = "6-way Venn Diagram of Segregating SNPs",
+      line = -1,
+      cex.main = 0.8
+  )
+
+# Close the PDF device
+dev.off()
+
+# show the plot here
+venn(data_list,
+     zcolor = colors,
+     opacity = 0.4,
+     box = FALSE,
+     ellipse = FALSE,
+     lty = "blank")
+```
+
+
+### 9.2 Parental loci with at least one parental genotype heterozygous
+
+```{r segregation_table}
+# Calculate shared SNPs among all families
+shared_snps <- Reduce(intersect, lapply(family_parents_3, function(df) df$SNP))
+
+# Calculate the number of shared SNPs
+n_shared_SNPs <- length(shared_snps)
+
+# Calculate the number of unique SNPs for each family
+n_unique_SNPs <- sapply(family_names, function(family) {
+  unique_SNPs <- family_parents_3[[family]]$SNP
+  for (other_family in family_names[family_names != family]) {
+    unique_SNPs <- setdiff(unique_SNPs, family_parents_3[[other_family]]$SNP)
+  }
+  length(unique_SNPs)
+})
+
+# Calculate the total number of SNPs for each family
+n_total_SNPs <- sapply(family_parents_3, function(df) length(unique(df$SNP)))
+
+# Calculate the percentage of shared SNPs for each family
+p_shared_SNPs <- round(n_shared_SNPs / n_total_SNPs * 100, 2)
+
+# Calculate the percentage of unique SNPs for each family
+p_unique_SNPs <- round(n_unique_SNPs / n_total_SNPs * 100, 2)
+
+# Create a data frame with the data
+table_data <- data.frame(
+  Family = family_names,
+  n_total_SNPs = n_total_SNPs,
+  n_shared_SNPs = n_shared_SNPs,
+  p_shared_SNPs = p_shared_SNPs,
+  n_unique_SNPs = n_unique_SNPs,
+  p_unique_SNPs = p_unique_SNPs
+)
+
+# Create a flextable object
+flex_table <- flextable::flextable(table_data)
+
+# Set the table caption
+table_caption <- "Table 1. Parental loci with at least one parental genotype heterozygous"
+flex_table <- flextable::set_caption(flex_table, caption = table_caption)
+
+# Print the table
+flex_table
+
+# Save the Word document
+flextable::save_as_docx(
+  flex_table,
+  path = here(
+    "output",
+    "segregation",
+    "albopictus",
+    "segregating_SNPs_table2.docx"
+  )
+)
+```
+
+Pairwise comparison of parental genotypes
+```{r}
+# Create an empty matrix to store the counts
+shared_snps_matrix <- matrix(0, nrow = length(family_names), ncol = length(family_names), dimnames = list(family_names, family_names))
+
+# Calculate the shared SNPs for each pairwise comparison
+for (i in 1:length(family_names)) {
+  for (j in 1:length(family_names)) {
+    if (i != j) {
+      shared_snps <- intersect(family_parents_3[[i]]$SNP, family_parents_2[[j]]$SNP)
+      shared_snps_matrix[i, j] <- length(shared_snps)
+    }
+  }
+}
+
+# Convert the shared SNP matrix to a data frame
+shared_snps_df <- as.data.frame(shared_snps_matrix)
+
+# Create a flextable object for the shared SNP matrix
+flex_table_shared_snps_matrix <- flextable::flextable(shared_snps_df)
+
+# Set the table caption
+table_caption_shared_snps_matrix <- "Table 3. Number of SNPs shared among families"
+flex_table_shared_snps_matrix <- flextable::set_caption(flex_table_shared_snps_matrix, caption = table_caption_shared_snps_matrix)
+
+flex_table_shared_snps_matrix
+
+# Save the Word document
+flextable::save_as_docx(
+  flex_table_shared_snps_matrix,
+  path = here(
+    "output",
+    "segregation",
+    "albopictus",
+    "shared_SNPs_matrix.docx"
+  )
+)
+```
+
+We can check how many times we can test each SNP. For example, the SNP was genotyped in both parents and is heterozygous in one or both parents. I removed SNPs that were homozygous in both parents.
+
+```{r}
+# Combine SNP IDs from all families into a single vector
+all_snps <- unlist(lapply(family_parents_3, function(df) df$SNP))
+
+# Count the occurrences of each SNP in all six families
+snp_counts <- table(all_snps)
+
+# Calculate the number of times each SNP is seen in 1, 2, 3, 4, 5, or 6 families
+unique_counts <- table(snp_counts)
+
+# Create a data frame with the counts
+shared_snps_data <- data.frame(
+  "Times_seen" = 1:length(unique_counts),
+  "n_SNPs" = as.vector(unique_counts)
+)
+
+# Create a flextable object
+flex_table_shared_snps <- flextable::flextable(shared_snps_data)
+
+# Set the table caption
+table_caption_shared_snps <- "Table 2. Count of SNPs seen in different numbers of families"
+flex_table_shared_snps <- flextable::set_caption(flex_table_shared_snps, caption = table_caption_shared_snps)
+
+# Print the table
+flex_table_shared_snps
+
+# Save the Word document
+flextable::save_as_docx(
+  flex_table_shared_snps,
+  path = here(
+    "output",
+    "segregation",
+    "albopictus",
+    "shared_SNPs_table.docx"
+  )
+)
+```
+Out of the more than 100k SNPs, 19,213 can be tested only in one family but the others can be tested in more than one family.
+
+
+We can save the data as RDS format to load it later if necessary.
+To save the data
+```{r save_load_data}
+# Save the data
+saveRDS(
+  family_parents_3,
+  file = here(
+    "output", "segregation", "albopictus", "family_parents_2.rds"
+  )
+)
+saveRDS(
+  family_offspring_3,
+  file = here(
+    "output", "segregation", "albopictus", "family_offspring_2.rds"
+  )
+)
+```
+ 
+To load the data
+```{r load_the_data}
+# Load the data later
+family_parents_3 <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_parents_2.rds"
+    )
+  )
+family_offspring_3 <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_offspring_2.rds"
+    )
+  )
+```
+
+
+## 10. Chi square test with Aedes albopictus data
+
+Do a chi square test for each family, obtain p values, store them in a tibble, use Fisher test to combine the p values
+across the families. However, the number of SNPs in each family is different. So, if a SNP is in only one family, it is
+okay to have only one p values. Let's do the chi square and the fisher test to combine the p values.
+
+### 10.1 Remove SNPs with zeros or counts < 5
+
+We can remove SNPs with zero and \<5 counts if you want. Check below how many SNPs we would remove. I did not remove it for the test. I just wanted to know how many SNPs we would remove.
+
+```{r create_family_5}
+# Creating new data sets excluding rows with counts less than 5 in parents and offspring
+family_parents_5 <-
+  lapply(
+    family_parents_3, function(df) {
+      df[!(df$Expected_A1_count < 5 | df$Expected_A2_count < 5), ]
+    }
+  )
+
+family_offspring_5 <-
+  lapply(
+    family_offspring_3, function(df) {
+      df[!(df$Observed_A1_count < 5 | df$Observed_A2_count < 5), ]
+    }
+  )
+```
+
+
+### 10.2 Sanity checks after data tyding
+
+Now check again for discrepancies, we will use the data set without counts smaller than 5
+```{r discrepancies_before_and_after_filtering_01}
+# Create an empty vector to store families with discrepancies
+families_with_discrepancies <- c()
+
+# Loop over each family in the parents and offspring list
+for (family in names(family_parents_5)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_5[[family]]
+  offspring_data <- family_offspring_5[[family]]
+  
+  # Check if the number of rows (observations) is the same for both parents and offspring
+  if (nrow(parent_data) != nrow(offspring_data)) {
+    cat(paste("Number of observations differs for family", family, "\n"))
+  }
+  
+  # Check if the SNP ids are the same for both parents and offspring and are in the same order
+  if (!identical(parent_data$SNP, offspring_data$SNP)) {
+    # Calculate number of discrepancies
+    discrepancies <- sum(parent_data$SNP != offspring_data$SNP)
+    cat(paste("SNP ids and/or order differ for family", family, "with", discrepancies, "discrepancies. \n"))
+    # Append the family name to the vector
+    families_with_discrepancies <- c(families_with_discrepancies, family)
+  }
+}
+
+# Output families with discrepancies
+families_with_discrepancies
+```
+
+Because we remove the SNPs with counts below 5, the length and the SNPs between parental and offspring data sets is different. We can fix it with the code we used before.
+
+```{r discrepancies_before_and_after_filtering_02}
+# Initialize two empty lists to store the resulting data frames
+family_parents_6 <- list()
+family_offspring_6 <- list()
+
+# Loop over each family
+for (family in names(family_parents_5)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_5[[family]]
+  offspring_data <- family_offspring_5[[family]]
+  
+  # Perform an inner join based on SNP column to find common SNPs
+  common_data <- merge(parent_data, offspring_data, by = "SNP")
+  
+  # Find the rows in the parent and offspring data that have the common SNPs
+  parent_data_common <- parent_data[parent_data$SNP %in% common_data$SNP, ]
+  offspring_data_common <- offspring_data[offspring_data$SNP %in% common_data$SNP, ]
+  
+  # Sort the data frames by the SNP column
+  parent_data_common <- parent_data_common[order(parent_data_common$SNP), ]
+  offspring_data_common <- offspring_data_common[order(offspring_data_common$SNP), ]
+  
+  # Store the resulting data frames in the corresponding lists
+  family_parents_6[[family]] <- parent_data_common
+  family_offspring_6[[family]] <- offspring_data_common
+}
+```
+
+Now check again for discrepancies again
+```{r discrepancies_before_and_after_filtering_03}
+# Create an empty vector to store families with discrepancies
+families_with_discrepancies <- c()
+
+# Loop over each family in the parents and offspring list
+for (family in names(family_parents_6)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_6[[family]]
+  offspring_data <- family_offspring_6[[family]]
+  
+  # Check if the number of rows (observations) is the same for both parents and offspring
+  if (nrow(parent_data) != nrow(offspring_data)) {
+    cat(paste("Number of observations differs for family", family, "\n"))
+  }
+  
+  # Check if the SNP ids are the same for both parents and offspring and are in the same order
+  if (!identical(parent_data$SNP, offspring_data$SNP)) {
+    # Calculate number of discrepancies
+    discrepancies <- sum(parent_data$SNP != offspring_data$SNP)
+    cat(paste("SNP ids and/or order differ for family", family, "with", discrepancies, "discrepancies. \n"))
+    # Append the family name to the vector
+    families_with_discrepancies <- c(families_with_discrepancies, family)
+  }
+}
+
+# Output families with discrepancies
+families_with_discrepancies
+```
+
+We can compare how many SNPs we are removing from data sets once we remove the SNPs with counts below 5. Since we have the same SNPs in parents and offspring, we can check only one of the data sets before and after removing the SNPs with low allele counts.
+
+```{r discrepancies_before_and_after_filtering_04, results='asis'}
+# Calculate the number of removed SNPs for each family
+removed_snps <- 
+  sapply(seq_along(family_parents_5), function(i) {
+  nrow(family_parents_5[[i]]) - nrow(family_parents_6[[i]])
+})
+
+# Calculate total unique SNPs before and after filtering
+unique_snps_before <-
+  unique(unlist(lapply(family_parents_5, `[[`, "SNP")))
+unique_snps_after <-
+  unique(unlist(lapply(family_parents_6, `[[`, "SNP")))
+
+# Calculate number of SNPs before and after for each family
+snps_before <- 
+  sapply(family_parents_5, function(df)
+  nrow(df))
+snps_after <- 
+  sapply(family_parents_6, function(df)
+  nrow(df))
+
+# Calculate percentage of SNPs removed for each family and across all families
+percentage_removed <-
+  removed_snps / snps_before * 100
+percentage_removed_all <-
+  length(setdiff(unique_snps_before, unique_snps_after)) / length(unique_snps_before) * 100
+
+# Format percentage values with two decimal places
+percentage_removed <- 
+  sprintf("%.2f", percentage_removed)
+percentage_removed_all <-
+  sprintf("%.2f", percentage_removed_all)
+
+# Create a tibble with the results
+results <- 
+  tibble(
+  Family = as.character(1:length(removed_snps)),
+  SNPs_Before = snps_before,
+  SNPs_After = snps_after,
+  SNPs_Removed = removed_snps,
+  Percentage_Removed = percentage_removed
+)
+
+# Calculate the total number of unique SNPs removed across all families
+total_snps_removed <-
+  length(setdiff(unique_snps_before, unique_snps_after))
+
+# Add total row to the tibble
+total_row <- 
+  tibble(
+  Family = "Total",
+  SNPs_Before = length(unique_snps_before),
+  SNPs_After = length(unique_snps_after),
+  SNPs_Removed = total_snps_removed,
+  Percentage_Removed = percentage_removed_all
+)
+# Bind objects
+results <- 
+  bind_rows(results, total_row)
+
+# Set theme
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Create the flextable object to save as .docx
+flex_table <- 
+  flextable(results) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 5. Number of SNPs before and after removing SNPs with allele count below 5.",
+      props = fp_text_default(color = "#000000", font.size = 12)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the table Markdown
+flex_table
+
+# Save the Word document
+flextable::save_as_docx(flex_table,
+                        path = here(
+                          "output",
+                          "segregation",
+                          "albopictus",
+                          "filtering_results.docx"
+                        ))
+```
+
+We remove a total of 2,276 from our testing because they had counts below 5. It means we will not test their segregation because their counts were below 5. We see that fam6 which had only 6 offspring had around 40% of the SNPs with counts below 5. There was a problem with the DNA yield of the fam6 and we did not have too many individuals to genotype. However, most of SNPs from fam6 are tested in other families. So, we lose some power and some SNPs, but there is not much we can do. Perhaps keep the low counts but we know it will be breaking one assumption of the chi square test.
+
+
+Now we can do our test. Since we have thousands of SNPs, lets subset to create a small data set to test the code for the statistical analyses
+
+```{r subset_01}
+# Subset the data to get the first 100 SNPs
+family_parents_6_subset_no_zeros <- lapply(family_parents_6, function(df) df[1:100, ])
+family_offspring_6_subset_no_zeros <- lapply(family_offspring_6, function(df) df[1:100, ])
+
+# Verify the result data
+# str(family_parents_6_subset_no_zeros)
+# str(family_offspring_6_subset_no_zeros)
+```
+We can save the data as RDS format to load it later if necessary.
+To save the data
+```{r save_data1}
+# Save the data
+saveRDS(
+  family_parents_6_subset_no_zeros,
+  file = here(
+    "output", "segregation", "albopictus", "family_parents_6_subset_no_zeros.rds"
+  )
+)
+saveRDS(
+  family_offspring_6_subset_no_zeros,
+  file = here(
+    "output", "segregation", "albopictus", "family_offspring_6_subset_no_zeros.rds"
+  )
+)
+```
+
+We can also subset the original data and keep the counts below 5.
+
+```{r subset_02}
+# Subset the data to get the first 100 SNPs
+family_parents_6_subset_with_zeros <- lapply(family_parents_3, function(df) df[1:100, ])
+family_offspring_6_subset_with_zeros <- lapply(family_offspring_3, function(df) df[1:100, ])
+
+# Verify the subsetted data
+# str(family_parents_6_subset_with_zeros)
+# str(family_offspring_6_subset_with_zeros)
+```
+
+Check for discrepancies
+```{r discrepancies_before_and_after_filtering_06}
+# Create an empty vector to store families with discrepancies
+families_with_discrepancies <- c()
+
+# Loop over each family in the parents and offspring list
+for (family in names(family_parents_6_subset_with_zeros)) {
+  
+  # Extract the parent and offspring data for the current family
+  parent_data <- family_parents_6_subset_with_zeros[[family]]
+  offspring_data <- family_offspring_6_subset_with_zeros[[family]]
+  
+  # Check if the number of rows (observations) is the same for both parents and offspring
+  if (nrow(parent_data) != nrow(offspring_data)) {
+    cat(paste("Number of observations differs for family", family, "\n"))
+  }
+  
+  # Check if the SNP ids are the same for both parents and offspring and are in the same order
+  if (!identical(parent_data$SNP, offspring_data$SNP)) {
+    # Calculate number of discrepancies
+    discrepancies <- sum(parent_data$SNP != offspring_data$SNP)
+    cat(paste("SNP ids and/or order differ for family", family, "with", discrepancies, "discrepancies. \n"))
+    # Append the family name to the vector
+    families_with_discrepancies <- c(families_with_discrepancies, family)
+  }
+}
+
+# Output families with discrepancies
+families_with_discrepancies
+```
+
+```{r save_data2}
+# Save the data
+saveRDS(
+  family_parents_6_subset_with_zeros,
+  file = here(
+    "output", "segregation", "albopictus", "family_parents_6_subset_with_zeros.rds"
+  )
+)
+saveRDS(
+  family_offspring_6_subset_with_zeros,
+  file = here(
+    "output", "segregation", "albopictus", "family_offspring_6_subset_with_zeros.rds"
+  )
+)
+```
+
+
+Clean environment and memory
+```{r clean_r_env}
+rm(list = ls())
+gc()
+```
+
+To load the data
+```{r load_the_data1}
+# Load the data with no counts below 5
+family_parents_6_subset_no_zeros <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_parents_6_subset_no_zeros.rds"
+    )
+  )
+family_offspring_6_subset_no_zeros <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_offspring_6_subset_no_zeros.rds"
+    )
+  )
+
+# Load the data with counts below 5 and zeros
+family_parents_6_subset_with_zeros <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_parents_6_subset_with_zeros.rds"
+    )
+  )
+family_offspring_6_subset_with_zeros <-
+  readRDS(
+    file = here(
+      "output", "segregation", "albopictus", "family_offspring_6_subset_with_zeros.rds"
+    )
+  )
+```
+
+### 10.3 Segregation test
+
+We will use the data without filtering. 
+
+**Code Explanation:**
+
+1. **Data Frame Initialization:** Initializes an empty data frame named "combined_df" with specific column names and data types.
+
+2. **Unique SNP Identification:** Identifies all unique Single Nucleotide Polymorphisms (SNPs) across all families.
+
+3. **SNP Analysis Loop:** Begins a loop to perform statistical analysis for each SNP.
+
+4. **Family Iteration:** Inside this loop, another loop is created to go through each family.
+
+5. **SNP Presence Check:** For each family, the code checks if the current SNP is present in both parents and offspring.
+
+6. **Statistical Tests:** Conducts Fisher's exact test or Chi-square test depending on the observed and expected counts for the SNP alleles.
+
+7. **P-Value Storage:** Stores the p-value from the statistical test.
+
+8. **Data Frame Update:** Adds the details to the "combined_df" data frame for each family.
+
+9. **Data Frame Transformation:** Uses "pivot_wider" to transform the data frame from a long format to a wide format, creating separate columns for each family and renaming them.
+
+10. **Rows Merging:** Merges rows with same SNP, while preserving unique values in each family column, and places the count of families and combined p-value in the final data frame.
+
+11. **Output Order Setting:** Sets the order of the columns in the output data frame.
+
+12. **P-Value Combination:** Combines the p-values for each SNP across all families using a chi-square based method.
+
+13. **Adjusted P-Values Calculation:** Calculates adjusted p-values using the Holm-Bonferroni method.
+
+14. **P-Values Formatting:** Applies a custom function to format the p-values in a certain manner.
+
+15. **Count Columns Rounding:** Rounds count columns to 2 decimal places.
+
+16. **P-Values Conversion:** Converts the p-values to numeric and then applies custom formatting to these columns.
+
+17. **Family Count Update:** Updates the count of families for each SNP.
+
+18. **Results Conversion to Tibble:** Converts the final results data frame to a tibble for displaying.
+
+19. **Flextable Creation:** Creates a flextable object to display the head of the results in a stylized format.
+
+```{r segregation_test, warning=FALSE}
+# Initialize the combined data frame
+combined_df <-
+  data.frame(
+    Family = character(),
+    SNP = character(),
+    Expected_A1_count = numeric(),
+    Expected_A2_count = numeric(),
+    Observed_A1_count = numeric(),
+    Observed_A2_count = numeric(),
+    P_Value = numeric(),
+    Combined_P_Value = numeric(),
+    Family_Count = integer(),
+    stringsAsFactors = FALSE
+  )
+
+# Get all unique SNPs across all families - use _with_zeros or no_zeros to see how many SNPs
+all_snps <-
+  unique(
+    unlist(
+      lapply(
+        family_parents_6_subset_with_zeros, function(x) {
+          x$SNP
+        }
+      )
+    )
+  )
+
+# Perform the analysis for each SNP
+for (snp in all_snps) {
+  p_values <- numeric()
+  family_count <- 0
+  families <- c()
+
+  # Go through each family
+  for (i in 1:length(family_parents_6_subset_with_zeros)) {
+    family_parents <- family_parents_6_subset_with_zeros[[i]]
+    family_offspring <- family_offspring_6_subset_with_zeros[[i]]
+
+    # Check if the SNP is in the family
+    if (snp %in% family_parents$SNP &&
+      snp %in% family_offspring$SNP) {
+      family_count <- family_count + 1
+      families <- c(families, names(family_parents_6_subset_with_zeros)[i])
+
+      # Conduct the chi-square test
+      observed_counts <-
+        c(
+          family_offspring[family_offspring$SNP == snp, "Observed_A1_count"],
+          family_offspring[family_offspring$SNP == snp, "Observed_A2_count"]
+        )
+      expected_counts <-
+        c(
+          family_parents[family_parents$SNP == snp, "Expected_A1_count"],
+          family_parents[family_parents$SNP == snp, "Expected_A2_count"]
+        )
+      if (min(observed_counts, expected_counts) < 5) {
+        # If either of the counts is less than 5, use Fisher's Exact Test
+        test_result <- fisher.test(matrix(c(observed_counts, expected_counts), nrow = 2))$p.value
+      } else {
+        # Otherwise use Chi-Square Test
+        test_result <- chisq.test(observed_counts, p = expected_counts / sum(expected_counts))$p.value
+      }
+
+      # Store the p-value
+      p_values <- c(p_values, test_result)
+
+      # Add the details to the data frame for each family
+      combined_df <- rbind(
+        combined_df,
+        data.frame(
+          Family = names(family_parents_6_subset_with_zeros)[i],
+          SNP = snp,
+          Expected_A1_count = family_parents[family_parents$SNP == snp, "Expected_A1_count"],
+          Observed_A1_count = family_offspring[family_offspring$SNP == snp, "Observed_A1_count"],
+          Expected_A2_count = family_parents[family_parents$SNP == snp, "Expected_A2_count"],
+          Observed_A2_count = family_offspring[family_offspring$SNP == snp, "Observed_A2_count"],
+          P_Value = test_result,
+          Family_Count = family_count,
+          # Assign the Family_Count here
+          Combined_P_Value = NA,
+          # As we haven't calculated combined p-value yet
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+  }
+
+  # Skip if there's no SNP found in any family
+  if (family_count == 0) {
+    next
+  }
+}
+
+new_df <- combined_df|>
+  pivot_wider(names_from = Family, values_from = c(Expected_A1_count, Observed_A1_count, Expected_A2_count, Observed_A2_count, P_Value)) |>
+  rename_with(~ gsub("(\\d+)_(Expected|Observed)", paste0("fam\\1_", "\\2"), .), starts_with("Expected")) |>
+  rename_with(~ gsub("(\\d+)_(Expected|Observed)", paste0("fam\\1_", "\\2"), .), starts_with("Observed"))
+
+# Merge rows
+merged_df <-
+  new_df |>
+  group_by(SNP) %>%
+  summarise(
+    across(
+      starts_with("Expected_A1_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Observed_A1_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Expected_A2_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Observed_A2_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("P_Value_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    Family_Count = first(Family_Count),
+    Combined_P_Value = first(Combined_P_Value)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(
+    SNP,
+    starts_with("Expected_A1_count_fam"),
+    starts_with("Expected_A2_count_fam"),
+    starts_with("Observed_A1_count_fam"),
+    starts_with("Observed_A2_count_fam"),
+    starts_with("P_Value_fam"),
+    Family_Count,
+    Combined_P_Value
+  )
+
+# set ouput order
+merged_df <-
+  merged_df |>
+  dplyr::select(SNP,
+         starts_with("Expected_A1_count_fam1"),
+         starts_with("Observed_A1_count_fam1"),
+         starts_with("Expected_A2_count_fam1"),
+         starts_with("Observed_A2_count_fam1"),
+         starts_with("P_Value_fam1"),
+         starts_with("Expected_A1_count_fam2"),
+         starts_with("Observed_A1_count_fam2"),
+         starts_with("Expected_A2_count_fam2"),
+         starts_with("Observed_A2_count_fam2"),
+         starts_with("P_Value_fam2"),
+         starts_with("Expected_A1_count_fam3"),
+         starts_with("Observed_A1_count_fam3"),
+         starts_with("Expected_A2_count_fam3"),
+         starts_with("Observed_A2_count_fam3"),
+         starts_with("P_Value_fam3"),
+         starts_with("Expected_A1_count_fam4"),
+         starts_with("Observed_A1_count_fam4"),
+         starts_with("Expected_A2_count_fam4"),
+         starts_with("Observed_A2_count_fam4"),
+         starts_with("P_Value_fam4"),
+         starts_with("Expected_A1_count_fam5"),
+         starts_with("Observed_A1_count_fam5"),
+         starts_with("Expected_A2_count_fam5"),
+         starts_with("Observed_A2_count_fam5"),
+         starts_with("P_Value_fam5"),
+         starts_with("Expected_A1_count_fam6"),
+         starts_with("Observed_A1_count_fam6"),
+         starts_with("Expected_A2_count_fam6"),
+         starts_with("Observed_A2_count_fam6"),
+         starts_with("P_Value_fam6"),
+         Family_Count,
+         Combined_P_Value)
+
+#
+# Combine the p values 
+
+
+# Option 1: using fisher.test()
+
+# Create new columns for Combined_P_Value and Adjusted_P_Value
+merged_df$Combined_P_Value <- NA
+merged_df$Adjusted_P_Value <- NA
+
+# Iterate over each row
+# for (i in 1:nrow(merged_df)) {
+#   p_values <- numeric()
+# 
+#   # Check P-values in each family column
+#   for (j in 1:6) {
+#     col_name <- paste0("P_Value_fam", j)
+#     if (!is.na(merged_df[i, col_name])) {
+#       p_value <- as.numeric(merged_df[i, col_name])
+#       if (!is.na(p_value)) {
+#         p_values <- c(p_values, p_value)
+#       }
+#     }
+#   }
+# 
+#   # Combine P-values if more than one is present - using fisher.test
+#   if (length(p_values) > 1) {
+#     contingency_table <- matrix(c(sum(1 - p_values), sum(p_values), sum(p_values), sum(1 - p_values)), ncol = 2)
+#     combined_p_value <- fisher.test(contingency_table)$p.value
+#     merged_df[i, "Combined_P_Value"] <- combined_p_value
+#   } else if (length(p_values) == 1) {
+#     merged_df[i, "Combined_P_Value"] <- p_values
+#   }
+# }
+#
+# Option 2: using chi-square
+# Iterate over each row
+for (i in 1:nrow(merged_df)) {
+  p_values <- numeric()
+
+  # Check P-values in each family column
+  for (j in 1:6) {
+    col_name <- paste0("P_Value_fam", j)
+    if (!is.na(merged_df[i, col_name])) {
+      p_value <- as.numeric(merged_df[i, col_name])
+      if (!is.na(p_value)) {
+        p_values <- c(p_values, p_value)
+      }
+    }
+  }
+
+  # Combine P-values if more than one is present
+  if (length(p_values) > 1) {
+    combined_p_value <- pchisq(
+      -2 * sum(log(p_values)),
+      df = 2 * length(p_values),
+      lower.tail = FALSE
+    )
+    merged_df[i, "Combined_P_Value"] <- combined_p_value
+  } else if (length(p_values) == 1) {
+    merged_df[i, "Combined_P_Value"] <- p_values
+  }
+}
+
+# Calculate Adjusted P-values
+adjusted_p_values <- p.adjust(merged_df$Combined_P_Value, method = "holm")
+merged_df$Adjusted_P_Value <- adjusted_p_values
+
+
+# Custom formatting function for p-values
+format_pvalues <- function(x) {
+  ifelse(x < 0.001, formatC(x, format = "e", digits = 2),
+         ifelse(x >= 0.001 & x < 1, round(x, 3),
+                ifelse(x == 1, "1", format(x, scientific = FALSE))))
+}
+
+# Apply custom formatting to Combined_P_Value and Adjusted_P_Value columns
+merged_df[c("Combined_P_Value", "Adjusted_P_Value")] <- lapply(merged_df[c("Combined_P_Value", "Adjusted_P_Value")], format_pvalues)
+
+# Get a vector of column names containing "_count"
+count_columns <- grep("_count", colnames(merged_df), value = TRUE)
+
+# Iterate over these columns, and round each to 2 decimal places
+merged_df <- merged_df |>
+  mutate(across(all_of(count_columns), ~ round(., digits = 2)))
+
+# Get a vector of column names starting with "P_Value_fam"
+pvalue_columns <- grep("^P_Value_fam", colnames(merged_df), value = TRUE)
+
+# Convert P_Value columns to numeric
+merged_df <- 
+  merged_df |>
+  mutate(across(all_of(pvalue_columns), as.numeric))
+
+# Apply custom formatting to P_Value columns
+merged_df[pvalue_columns] <-
+  lapply(merged_df[pvalue_columns], format_pvalues)
+
+# Update the counts
+pvalue_columns <-
+  grep("P_Value_fam", colnames(merged_df), value = TRUE)
+
+merged_df <-
+  merged_df |>
+  mutate(
+    Family_Count = rowSums(!is.na(across(all_of(pvalue_columns))))
+  )
+
+# Convert head(results) to a tibble
+table_result <- 
+  as_tibble(merged_df)
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- 
+flextable(head(table_result)) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 6. Output of 100 SNPs to test our code (header) .",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+Select p values columns
+```{r sselect_p_values}
+# Select columns with "SNP" and "P_Value" in the column name
+selected_columns <- c("SNP", grep("P_Value", colnames(merged_df), value = TRUE), "Family_Count")
+
+# Create a new dataframe with selected columns
+selected_df <- merged_df[selected_columns]
+
+# Reorder the columns in selected_df
+selected_df <- selected_df[, c(selected_columns[1:7], selected_columns[10], selected_columns[8], selected_columns[9])]
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- flextable(head(selected_df)) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 6. Output of 100 SNPs to test our code (header).",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+
+Save the results in Excel format
+```{r save_excel_format_01}
+# Specify the path and file name for the Excel file
+excel_file <-
+  here("output",
+       "segregation",
+       "albopictus",
+       "results_pvalues_100_SNPs_01.xlsx")
+
+# Create an empty Excel workbook
+wb <- openxlsx::createWorkbook()
+
+# Create a worksheet in the workbook
+openxlsx::addWorksheet(wb, sheetName = "Results")
+
+# Write the data frame to the worksheet
+openxlsx::writeData(wb, sheet = "Results", selected_df)
+
+# Save the workbook as an Excel file
+openxlsx::saveWorkbook(wb, file = excel_file, overwrite = TRUE)
+```
+
+
+We can check the range of the p-values
+```{r range_pvalues}
+# Calculate the range for each column (excluding SNP)
+column_ranges <-
+  selected_df |>
+  dplyr::select(-SNP) |>
+  reframe(
+    across(
+      .cols = everything(),
+      .fns = list(
+        range = ~ range(as.numeric(.), na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+# Print the column ranges
+print(column_ranges)
+```
+We see values from 0 to 1. I created a format function to make zero as 0 and not 00e+00, values from 0 to 0.001 will have scientific notation, 0.001 to 1 will have 3 decimals (rounded).
+
+
+Check how many SNPs we tested. Remember, each family has a different set of SNPs. So, we end up testing more than 500 SNPs.
+
+```{r number_SNPs_tested}
+length(
+  unique(
+    selected_df$SNP
+  )
+)
+```
+
+The p-value is a measure of the likelihood that the observed difference from expected occurred due to random chance. A
+higher p-value suggests the frequencies could be randomly distributed, while a lower p-value suggests non-random
+distribution. The conventional threshold to decide whether a result is statistically significant is often set at 0.05.
+
+In this case, you could consider those SNPs as randomly distributed whose adjusted p-value is more than 0.05 in all the
+families where they appear.
+
+
+We can use the adjusted p values to filter out SNPs
+
+```{r snps_passed_01}
+randomly_distributed_SNPs3 <-
+  selected_df |>
+  filter(Adjusted_P_Value > 0.05) |>
+  pull(SNP) |>
+  unique()
+
+length(randomly_distributed_SNPs3)
+```
+We tested 205 SNPs and 197 passed our test.  
+
+
+## 11. Sanity checks
+
+Check the mim and max count values for each allele in each family
+
+```{r, warning=FALSE}
+# Define the list of variables
+vars <-
+  c(
+    "Expected_A1_count",
+    "Expected_A2_count",
+    "Observed_A1_count",
+    "Observed_A2_count"
+  )
+
+# Define the lists of data frames
+dfs_parents <- list(
+  fam1 = family_parents_6_subset_with_zeros$fam1,
+  fam2 = family_parents_6_subset_with_zeros$fam2,
+  fam3 = family_parents_6_subset_with_zeros$fam3,
+  fam4 = family_parents_6_subset_with_zeros$fam4,
+  fam5 = family_parents_6_subset_with_zeros$fam5,
+  fam6 = family_parents_6_subset_with_zeros$fam6
+)
+
+dfs_offspring <- list(
+  fam1 = family_offspring_6_subset_with_zeros$fam1,
+  fam2 = family_offspring_6_subset_with_zeros$fam2,
+  fam3 = family_offspring_6_subset_with_zeros$fam3,
+  fam4 = family_offspring_6_subset_with_zeros$fam4,
+  fam5 = family_offspring_6_subset_with_zeros$fam5,
+  fam6 = family_offspring_6_subset_with_zeros$fam6
+)
+
+# Initialize the result lists
+max_vals <- list()
+min_vals <- list()
+
+# Iterate over all variables
+for (var in vars) {
+  # Calculate the maximum values
+  max_vals[[var]] <-
+    max(sapply(dfs_parents, function(x)
+      max(x[[var]])),
+      sapply(dfs_offspring, function(x)
+        max(x[[var]])))
+  
+  # Calculate the minimum values
+  min_vals[[var]] <-
+    min(sapply(dfs_parents, function(x)
+      min(x[[var]])),
+      sapply(dfs_offspring, function(x)
+        min(x[[var]])))
+}
+
+# Print the maximum values
+print(max_vals)
+
+# Print the minimum values
+print(min_vals)
+```
+
+Check summary statistics
+
+```{r get_stats}
+# Define the function to calculate the mode
+calc_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Define the function to calculate summary statistics
+calc_summary_stats <- function(df, column) {
+  summarise(
+    df,
+    Mean = mean(df[[column]], na.rm = TRUE),
+    Median = median(df[[column]], na.rm = TRUE),
+    Mode = calc_mode(df[[column]]), # Mode calculation updated
+    Quantile_0_0.25 = quantile(df[[column]], 0.25, na.rm = TRUE),
+    Quantile_0.25_0.5 = quantile(df[[column]], 0.5, na.rm = TRUE),
+    Quantile_0.5_0.75 = quantile(df[[column]], 0.75, na.rm = TRUE),
+    Quantile_0.75_1 = quantile(df[[column]], 1, na.rm = TRUE)
+  )
+}
+
+# Initialize the table to store the results
+table_result <- data.frame(
+  Family = character(),
+  Allele = character(),
+  Mean = numeric(),
+  Median = numeric(),
+  Mode = numeric(),
+  Quantile_0_0.25 = numeric(),
+  Quantile_0.25_0.5 = numeric(),
+  Quantile_0.5_0.75 = numeric(),
+  Quantile_0.75_1 = numeric(),
+  stringsAsFactors = FALSE
+)
+
+
+# Iterate over each family
+for (i in names(family_parents_6_subset_with_zeros)) {
+  family_parents <- family_parents_6_subset_with_zeros[[i]]
+  family_offspring <- family_offspring_6_subset_with_zeros[[i]]
+  
+  # Get the SNPs shared between parents and offspring within the family
+  shared_snps <- intersect(family_parents$SNP, family_offspring$SNP)
+  
+  # Filter the family dataset and offspring dataset to include only the shared SNPs
+  family_parents_shared <- dplyr::filter(family_parents, SNP %in% shared_snps)
+  family_offspring_shared <- dplyr::filter(family_offspring, SNP %in% shared_snps)
+  
+  # For each allele, calculate summary statistics and append them to the table
+  for (allele in c("Expected_A1_count", "Observed_A1_count", "Expected_A2_count", "Observed_A2_count")) {
+    if (grepl("Expected", allele)) {
+      df <- family_parents_shared
+    } else {
+      df <- family_offspring_shared
+    }
+    
+    summary_stats <- calc_summary_stats(df, allele)
+    
+    table_result <- bind_rows(
+      table_result,
+      data.frame(
+        Family = i,
+        Allele = allele,
+        Mean = summary_stats$Mean,
+        Median = summary_stats$Median,
+        Mode = summary_stats$Mode,
+        Quantile_0_0.25 = summary_stats$Quantile_0_0.25,
+        Quantile_0.25_0.5 = summary_stats$Quantile_0.25_0.5,
+        Quantile_0.5_0.75 = summary_stats$Quantile_0.5_0.75,
+        Quantile_0.75_1 = summary_stats$Quantile_0.75_1
+      )
+    )
+  }
+}
+
+
+# Create a flextable object
+flex_table <- flextable(table_result)
+
+# Print the flextable
+flex_table
+```
+
+
+Plot the stats
+
+```{r plot_stats}
+# Reshape data for ggplot
+table_result_long <- tidyr::pivot_longer(
+  table_result,
+  c(
+    "Mean",
+    "Median",
+    "Mode",
+    "Quantile_0_0.25",
+    "Quantile_0.25_0.5",
+    "Quantile_0.5_0.75",
+    "Quantile_0.75_1"
+  ),
+  names_to = "Statistic",
+  values_to = "Value"
+)
+
+# Source function theme
+source(here("scripts", "analysis", "my_theme.R"))
+
+# Define the desired order of the factor levels
+allele_order <- c("Expected_A1_count", "Observed_A1_count", "Expected_A2_count", "Observed_A2_count")
+
+# Convert the Allele variable to a factor with the desired order
+table_result_long$Allele <- factor(table_result_long$Allele, levels = allele_order)
+
+
+# Generate boxplot
+p3 <-
+  ggplot(table_result_long,
+         aes(
+           x = Family,
+           y = Value,
+           fill = Allele,
+           color = Allele
+         )) +
+  facet_wrap(~ Statistic, scales = "fixed") +
+  geom_boxplot() +
+  my_theme() +
+  theme(axis.text.x = element_text(angle = 90),
+        legend.position = "top") +
+  labs(title = "Boxplot of Quantiles for each Family", x = "Family", y = "Value")
+
+# check plot
+p3
+
+# Save Venn diagram to PDF
+# output_path <-
+#   here("output",
+#        "segregation",
+#        "albopictus",
+#        "count_stats.pdf")
+# ggsave(output_path,
+#        p3,
+#        height = 5,
+#        width = 8,
+#        dpi = 300)
+```
+
+The fam1 is the largest (44 offspring) while the fam6 is the smallest (6 offspring)
+
+## 12. Segregation test with all SNPs
+
+I updated the code to use the library data.table and tried to make the code more efficient. It still take a long time to run, so I saved the output in .rds format.
+
+Code summary:
+
+**1. Initialize Data Table**
+
+The script begins by initializing a 'data.table' named 'combined_dt' with the specified columns: Family, SNP, Expected_A1_count, Expected_A2_count, Observed_A1_count, Observed_A2_count, P_Value, Combined_P_Value, Family_Count. These columns will hold specific types of data (such as character, numeric, or integer).
+
+**2. Extract Unique SNPs**
+
+The 'all_snps' vector is created by extracting all unique SNP values from the list 'family_parents_3'.
+
+**3. Main Loop Over SNPs**
+
+The main part of the script starts with a loop over all SNPs, in which each SNP is analyzed separately.
+
+**4. Identify Families with the SNP**
+
+For each SNP, the script identifies families that contain this SNP.
+
+**5. Skip SNPs Not Present in Families**
+
+If no family contains the SNP, the loop skips to the next SNP.
+
+**6. Perform Statistical Tests**
+
+If a family does contain the SNP, the script performs a statistical test (either Fisher's Exact Test or Chi-Square Test, depending on the observed and expected counts) to compare the observed and expected counts of two alleles (A1 and A2) in the parents and the offspring.
+
+**7. Add Results to Data Table**
+
+The result of the statistical test and the data for the SNP (expected and observed counts, family name, etc.) are then added to the 'combined_dt'.
+
+**8. Save the Data**
+
+After the loop over SNPs is finished, the 'combined_dt' is saved to an .rds file for future use.
+
+**9. Widen the Data Frame**
+
+Next, the script transforms 'combined_dt' into a wider format using the 'pivot_wider()' function. The new data frame 'new_df' contains separate columns for each family.
+
+**10. Aggregate the Data**
+
+Then, 'new_df' is aggregated into 'merged_df' by grouping by SNP and summarizing the columns.
+
+**11. Calculate Combined P-Values**
+
+In the next step, the script calculates a combined P-value for each SNP across all families. If more than one P-value is present for a SNP, they are combined using the Fisher's method; if only one P-value is present, it is used as is.
+
+**12. Adjust for Multiple Comparisons**
+
+After that, the script adjusts the combined P-values for multiple comparisons using the Holm method.
+
+**13. Apply Custom Formatting and Round Counts**
+
+Then, the script applies custom formatting to P-values and rounds count values to 2 decimal places.
+
+**14. Convert to Tibble**
+
+After some more data transformations, the 'merged_df' is converted into a tibble 'table_result'.
+
+**15. Visualize the Data**
+
+Finally, 'table_result' is visualized using the 'flextable' function to create a nicely formatted table.
+
+
+### 12.1 Estimate p-values using chi-square test (count > 5) or Fisher test (counts < 5)
+
+```{r segregation_test2, warning=FALSE, eval=FALSE}
+# Initialize the data.table with the same columns as your data.frame
+combined_dt <- data.table(
+  Family = character(0),
+  SNP = character(0),
+  Expected_A1_count = numeric(0),
+  Expected_A2_count = numeric(0),
+  Observed_A1_count = numeric(0),
+  Observed_A2_count = numeric(0),
+  P_Value = numeric(0),
+  Combined_P_Value = numeric(0),
+  Family_Count = integer(0)
+)
+
+
+# Get all unique SNPs across all families - use _with_zeros or no_zeros to see how many SNPs
+all_snps <-
+  unique(unlist(lapply(family_parents_3, function(x) {
+    x$SNP
+  })))
+
+# Perform the analysis for each SNP
+for (snp in all_snps) {
+  # Get the families that contain the SNP
+  families_with_snp <- lapply(family_parents_3, function(family) {
+    snp %in% family$SNP
+  })
+  families_with_snp_index <- unlist(families_with_snp)
+  
+  # Check if any family contains the SNP
+  if (sum(families_with_snp_index) == 0) {
+    next
+  }
+  
+  # Go through each family that contains the SNP
+  for (i in which(families_with_snp_index)) {
+    family_parents <- family_parents_3[[i]]
+    family_offspring <- family_offspring_3[[i]]
+    
+    # Check if the SNP is in the offspring
+    if (snp %in% family_offspring$SNP) {
+      # Conduct the chi-square test
+      observed_counts <-
+        c(family_offspring[family_offspring$SNP == snp, "Observed_A1_count"],
+          family_offspring[family_offspring$SNP == snp, "Observed_A2_count"])
+      expected_counts <-
+        c(family_parents[family_parents$SNP == snp, "Expected_A1_count"],
+          family_parents[family_parents$SNP == snp, "Expected_A2_count"])
+      if (min(observed_counts, expected_counts) < 5) {
+        # If either of the counts is less than 5, use Fisher's Exact Test
+        test_result <-
+          fisher.test(matrix(c(
+            observed_counts, expected_counts
+          ), nrow = 2))$p.value
+      } else {
+        # Otherwise use Chi-Square Test
+        test_result <-
+          chisq.test(observed_counts, p = expected_counts / sum(expected_counts))$p.value
+      }
+      
+      # Add the details to the data table
+      combined_dt <- rbindlist(list(
+        combined_dt,
+        data.table(
+          Family = names(family_parents_3)[i],
+          SNP = snp,
+          Expected_A1_count = family_parents[family_parents$SNP == snp, "Expected_A1_count"],
+          Observed_A1_count = family_offspring[family_offspring$SNP == snp, "Observed_A1_count"],
+          Expected_A2_count = family_parents[family_parents$SNP == snp, "Expected_A2_count"],
+          Observed_A2_count = family_offspring[family_offspring$SNP == snp, "Observed_A2_count"],
+          P_Value = test_result,
+          Combined_P_Value = NA,
+          Family_Count = sum(families_with_snp_index)
+        )
+      ),
+      fill = TRUE,
+      use.names = TRUE)
+    }
+  }
+}
+```
+
+### 12.2 Save the data and load it back
+
+We will save the data and load it back since we used eval=FALSE in the chunk to estimate the p-values.
+
+```{r save_load_after_test}
+# Save the data because it takes a long time to run, when kniting the document, comment it out
+# saveRDS(
+#   combined_dt,
+#   file = here(
+#     "output",
+#     "segregation",
+#     "albopictus",
+#     "combined_dt_all_SNPs.rds"
+#   )
+# )
+
+# Load the data
+combined_dt <-
+  readRDS(
+    file = here(
+      "output",
+      "segregation",
+      "albopictus",
+      "combined_dt_all_SNPs.rds"
+    )
+  )
+```
+
+### 12.3 Combine and adjust p-values
+
+```{r combine_adjust_p_values, warning=FALSE}
+# Create new data frame using pivot_wider()
+new_df <-
+  combined_dt |>
+  pivot_wider(
+    names_from = Family,
+    values_from = c(
+      Expected_A1_count,
+      Observed_A1_count,
+      Expected_A2_count,
+      Observed_A2_count,
+      P_Value
+    )
+  ) |>
+  rename_with(~ gsub("(\\d+)_(Expected|Observed)", paste0("fam\\1_", "\\2"), .),
+              starts_with("Expected")) |>
+  rename_with(~ gsub("(\\d+)_(Expected|Observed)", paste0("fam\\1_", "\\2"), .),
+              starts_with("Observed"))
+
+# Merge rows
+merged_df_2 <-
+  new_df |>
+  group_by(SNP) |>
+  summarise(
+    across(
+      starts_with("Expected_A1_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Observed_A1_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Expected_A2_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(
+      starts_with("Observed_A2_count_fam"),
+      ~ ifelse(all(is.na(.)), NA, unique(.[!is.na(.)])[1])
+    ),
+    across(starts_with("P_Value_fam"),
+           ~ ifelse(all(is.na(
+             .
+           )), NA, unique(.[!is.na(.)])[1])),
+    Family_Count = dplyr::first(Family_Count),
+    Combined_P_Value = dplyr::first(Combined_P_Value)
+  ) |>
+  ungroup() |>
+  dplyr::select(
+    SNP,
+    starts_with("Expected_A1_count_fam"),
+    starts_with("Expected_A2_count_fam"),
+    starts_with("Observed_A1_count_fam"),
+    starts_with("Observed_A2_count_fam"),
+    starts_with("P_Value_fam"),
+    Family_Count,
+    Combined_P_Value
+  )
+
+# set output order
+merged_df_2 <-
+  merged_df_2 |>
+  dplyr::select(
+    SNP,
+    starts_with("Expected_A1_count_fam1"),
+    starts_with("Observed_A1_count_fam1"),
+    starts_with("Expected_A2_count_fam1"),
+    starts_with("Observed_A2_count_fam1"),
+    starts_with("P_Value_fam1"),
+    starts_with("Expected_A1_count_fam2"),
+    starts_with("Observed_A1_count_fam2"),
+    starts_with("Expected_A2_count_fam2"),
+    starts_with("Observed_A2_count_fam2"),
+    starts_with("P_Value_fam2"),
+    starts_with("Expected_A1_count_fam3"),
+    starts_with("Observed_A1_count_fam3"),
+    starts_with("Expected_A2_count_fam3"),
+    starts_with("Observed_A2_count_fam3"),
+    starts_with("P_Value_fam3"),
+    starts_with("Expected_A1_count_fam4"),
+    starts_with("Observed_A1_count_fam4"),
+    starts_with("Expected_A2_count_fam4"),
+    starts_with("Observed_A2_count_fam4"),
+    starts_with("P_Value_fam4"),
+    starts_with("Expected_A1_count_fam5"),
+    starts_with("Observed_A1_count_fam5"),
+    starts_with("Expected_A2_count_fam5"),
+    starts_with("Observed_A2_count_fam5"),
+    starts_with("P_Value_fam5"),
+    starts_with("Expected_A1_count_fam6"),
+    starts_with("Observed_A1_count_fam6"),
+    starts_with("Expected_A2_count_fam6"),
+    starts_with("Observed_A2_count_fam6"),
+    starts_with("P_Value_fam6"),
+    Family_Count,
+    Combined_P_Value
+  )
+
+# Combine the p values
+# Iterate over each row
+for (i in 1:nrow(merged_df_2)) {
+  p_values <- numeric()
+  
+  # Check P-values in each family column
+  for (j in 1:6) {
+    col_name <- paste0("P_Value_fam", j)
+    if (!is.na(merged_df_2[i, col_name])) {
+      p_value <- as.numeric(merged_df_2[i, col_name])
+      if (!is.na(p_value)) {
+        p_values <- c(p_values, p_value)
+      }
+    }
+  }
+  
+  # Combine P-values if more than one is present
+  if (length(p_values) > 1) {
+    combined_p_value <- pchisq(-2 * sum(log(p_values)),
+                               df = 2 * length(p_values),
+                               lower.tail = FALSE)
+    merged_df_2[i, "Combined_P_Value"] <- combined_p_value
+  } else if (length(p_values) == 1) {
+    merged_df_2[i, "Combined_P_Value"] <- p_values
+  }
+}
+
+# Calculate Adjusted P-values
+adjusted_p_values <-
+  p.adjust(merged_df_2$Combined_P_Value, method = "holm")
+merged_df_2$Adjusted_P_Value <- adjusted_p_values
+
+
+# Custom formatting function for p-values
+format_pvalues <- function(x) {
+  ifelse(x < 0.001,
+         formatC(x, format = "e", digits = 2),
+         ifelse(x >= 0.001 & x < 1, round(x, 3),
+                ifelse(x == 1, "1", format(x, scientific = FALSE))))
+}
+
+# Apply custom formatting to Combined_P_Value and Adjusted_P_Value columns
+merged_df_2[c("Combined_P_Value", "Adjusted_P_Value")] <-
+  lapply(merged_df_2[c("Combined_P_Value", "Adjusted_P_Value")], format_pvalues)
+
+# Get a vector of column names containing "_count"
+count_columns <-
+  grep("_count", colnames(merged_df_2), value = TRUE)
+
+# Iterate over these columns, and round each to 2 decimal places
+merged_df_2 <-
+  merged_df_2 |>
+  mutate(across(all_of(count_columns), ~ round(., digits = 2)))
+
+# Get a vector of column names starting with "P_Value_fam"
+pvalue_columns <-
+  grep("^P_Value_fam", colnames(merged_df_2), value = TRUE)
+
+# Convert P_Value columns to numeric
+merged_df_2 <-
+  merged_df_2 |>
+  mutate(across(all_of(pvalue_columns), as.numeric))
+
+# Apply custom formatting to P_Value columns
+merged_df_2[pvalue_columns] <-
+  lapply(merged_df_2[pvalue_columns], format_pvalues)
+
+# Update the counts
+pvalue_columns <-
+  grep("P_Value_fam", colnames(merged_df_2), value = TRUE)
+
+merged_df_2 <-
+  merged_df_2 |>
+  mutate(Family_Count = rowSums(!is.na(across(
+    all_of(pvalue_columns)
+  ))))
+
+# Convert head(results) to a tibble
+table_result <-
+  as_tibble(merged_df_2)
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <-
+  flextable(head(table_result)) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 6. Output of all SNPs to test our code (header) .",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+
+### 12.4 Select p-values columns
+
+Code explanation:
+
+**1. Selecting Columns:**
+The script starts by creating a vector 'selected_columns' that contains the names of the columns to be selected from the data frame 'merged_df'. These columns are "SNP", all the columns with "P_Value" in their names, and "Family_Count".
+
+**2. Creating a New Data Frame:**
+Then, a new data frame 'selected_df' is created by subsetting 'merged_df' with 'selected_columns'.
+
+**3. Reordering Columns:**
+Next, the script reorders the columns in 'selected_df'. The order of the columns is specified by indexing 'selected_columns'.
+
+**4. Setting Table Defaults:**
+Following that, the script sets default parameters for the upcoming table creation with 'set_flextable_defaults()'. This includes the font, font size, digit grouping symbol (big.mark), and the theme.
+
+**5. Creating a Flextable Object:**
+Then, the script creates a flextable object 'flex_table' from the first few rows of 'selected_df' using the 'flextable()' and 'head()' functions.
+
+**6. Adding a Caption:**
+The 'set_caption()' function is used to add a caption to 'flex_table'. The caption is formatted using 'as_paragraph()' and 'as_chunk()' functions, with specific text properties set using 'fp_text_default()'. The 'fp_par()' function is used to align the caption text to the center and add padding.
+
+**7. Printing the Flextable:**
+Finally, the flextable 'flex_table' is printed.
+
+
+```{r select_p_values2}
+# Select columns with "SNP" and "P_Value" in the column name
+selected_columns <-
+  c("SNP", grep("P_Value", colnames(merged_df_2), value = TRUE), "Family_Count")
+
+# Create a new dataframe with selected columns
+selected_df_2 <- 
+  merged_df_2[selected_columns]
+
+# Reorder the columns in selected_df_2
+selected_df_2 <-
+  selected_df_2[, c(selected_columns[1:7],
+                  selected_columns[10],
+                  selected_columns[8],
+                  selected_columns[9])]
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- flextable(head(selected_df_2)) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 6. Output of all SNPs to test our code (header).",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+
+Save the results in Excel format
+```{r save_excel_format_03}
+# Specify the path and file name for the Excel file
+excel_file <-
+  here("output",
+       "segregation",
+       "albopictus",
+       "combined_dt_all_SNPs.xlsx")
+
+# Create an empty Excel workbook
+wb <- openxlsx::createWorkbook()
+
+# Create a worksheet in the workbook
+openxlsx::addWorksheet(wb, sheetName = "Results")
+
+# Write the data frame to the worksheet
+openxlsx::writeData(wb, sheet = "Results", selected_df_2)
+
+# Save the workbook as an Excel file
+openxlsx::saveWorkbook(wb, file = excel_file, overwrite = TRUE)
+```
+
+
+We can check the range of the p-values
+```{r range_pvalues2}
+# Calculate the range for each column (excluding SNP)
+column_ranges <-
+  selected_df_2 |>
+  dplyr::select(-SNP) |>
+  reframe(
+    across(
+      .cols = everything(),
+      .fns = list(
+        range = ~ range(as.numeric(.), na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+# Print the column ranges
+print(column_ranges)
+```
+We see values from 0 to 1. I created a format function to make zero as 0 and not 00e+00, values from 0 to 0.001 will have scientific notation, 0.001 to 1 will have 3 decimals (rounded).
+
+
+Check how many SNPs we tested. Remember, each family has a different set of SNPs. So, we end up testing more than 500 SNPs.
+
+```{r number_SNPs_tested4}
+length(
+  unique(
+    selected_df_2$SNP
+  )
+)
+```
+
+The p-value is a measure of the likelihood that the observed difference from expected occurred due to random chance. A
+higher p-value suggests the frequencies could be randomly distributed, while a lower p-value suggests non-random
+distribution. The conventional threshold to decide whether a result is statistically significant is often set at 0.05.
+
+In this case, you could consider those SNPs as randomly distributed whose adjusted p-value is more than 0.05 in all the
+families where they appear.
+
+
+We can use the adjusted p values to filter out SNPs
+
+Pass
+```{r}
+randomly_distributed_SNPs3 <-
+  selected_df_2 |>
+  filter(Adjusted_P_Value > 0.05) |>
+  pull(SNP) |>
+  unique()
+
+length(randomly_distributed_SNPs3)
+```
+
+Fail
+```{r}
+segregation_errors_SNPs <-
+  selected_df_2 |>
+  filter(Adjusted_P_Value < 0.05) |>
+  pull(SNP) |>
+  unique()
+
+length(segregation_errors_SNPs)
+```
+
+We tested 101,376 SNPs and 99,313 passed our test and 2,047 did not pass (2.03% error rate).
+
+### 12.5 Save the list of SNPs for futher genotype calls.
+
+Write the list of SNPs that passed our test to file
+```{r save_list_SNPs_for_genotype_calls}
+# Create object
+pass_segregation_SNPs <- unique(selected_df_2$SNP)
+
+# Define the file path
+file_path <- here("output",
+                  "segregation",
+                  "albopictus",
+                  "albopictus_SNPs_passed_segregation.txt")
+
+# Write unique SNPs to the file
+writeLines(pass_segregation_SNPs, con = file_path)
+```
+
+Write the list of SNPs that did not our test to file
+```{r}
+# Create object
+fail_segregation_SNPs <- unique(segregation_errors_SNPs)
+
+# Define the file path
+file_path <- here("output",
+                  "segregation",
+                  "albopictus",
+                  "albopictus_SNPs_fail_segregation.txt")
+
+# Write unique SNPs to the file
+writeLines(fail_segregation_SNPs, con = file_path)
+```
+
+
+
+
+
+
+
+
+
+
